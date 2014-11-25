@@ -701,6 +701,14 @@ public class HBaseTxClient {
                      }
              }
      }
+	
+    public void nodeDown(int nodeID) throws IOException {
+        System.out.println("nodeDown Process with nid:" + nodeID);
+    }
+
+    public void nodeUp(int nodeID) throws IOException {
+        System.out.println("nodeUp Process with nid:" + nodeID);
+    }
 
      //================================================================================
      // DTMCI Calls
