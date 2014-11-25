@@ -778,8 +778,8 @@ public class HBaseTxClient {
                             LOG.error(se);
                         }
                     }
-                    if(LOG.isDebugEnabled()) LOG.debug("Exiting recovery thread for tm ID: " + tmID);
                 }
+                if(LOG.isDebugEnabled()) LOG.debug("Exiting recovery thread for tm ID: " + tmID);
             }
      }
 
