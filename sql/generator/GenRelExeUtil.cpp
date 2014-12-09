@@ -62,7 +62,6 @@
 #include "ComTdbExeUtil.h"
 #include "ComTdbFirstN.h"
 #include "ComTdbStats.h"
-#include "ComTdbInterpretAsRow.h"
 #include "ComTdbHbaseAccess.h"
 #include "ComTdbHdfsScan.h"
 #include "ExplainTuple.h"
@@ -81,7 +80,13 @@
 #include "ComSqlId.h"
 #include "MVInfo.h"
 #include "StmtDDLCreateTable.h"
+
+// need for authorization checks
+#include "ComUser.h"
 #include "CmpSeabaseDDL.h"
+#include "PrivMgrCommands.h"
+#include "PrivMgrComponentPrivileges.h"
+// end authorization checks
 
 #ifndef HFS2DM
 #define HFS2DM
@@ -4540,6 +4545,412 @@ short ExeUtilAQR::codeGen(Generator * generator)
 }
 
 
+/////////////////////////////////////////////////////////
+//
+// ExeUtilLobExtract::codeGen()
+//
+/////////////////////////////////////////////////////////
+short ExeUtilLobExtract::codeGen(Generator * generator)
+{
+  ExpGenerator * expGen = generator->getExpGenerator();
+  Space * space = generator->getSpace();
+
+  // allocate a map table for the retrieved columns
+  generator->appendAtEnd();
+
+  ex_cri_desc * givenDesc
+    = generator->getCriDesc(Generator::DOWN);
+
+  ex_cri_desc * returnedDesc
+#pragma nowarn(1506)   // warning elimination
+    = new(space) ex_cri_desc(givenDesc->noTuples() + 1, space);
+#pragma warn(1506)  // warning elimination
+
+  ex_cri_desc * workCriDesc = new(space) ex_cri_desc(4, space);
+  const Int32 work_atp = 1;
+  const Int32 exe_util_row_atp_index = 2;
+  const Int32 work_row_atp_index = 2;
+
+  ComTdb * child_tdb = NULL;
+  ExplainTuple *childExplainTuple = NULL;
+  if (child(0))
+    {
+      MapTable * childMapTable = generator->appendAtEnd();
+
+      // generate code for child tree
+      child(0)->codeGen(generator);
+      child_tdb = (ComTdb *)(generator->getGenObj());
+      childExplainTuple = generator->getExplainTuple();
+    }
+
+  // Assumption (for now): retrievedCols contains ALL columns from
+  // the table/index. This is because this operator does
+  // not support projection of columns. Add all columns from this table
+  // to the map table.
+  //
+  // The row retrieved from filesystem is returned as the last entry in
+  // the returned atp.
+
+  Attributes ** attrs =
+    new(generator->wHeap())
+    Attributes * [getVirtualTableDesc()->getColumnList().entries()];
+
+  for (CollIndex j = 0; j < getVirtualTableDesc()->getColumnList().entries(); j++)
+    {
+      ItemExpr * col_node
+	= (((getVirtualTableDesc()->getColumnList())[j]).getValueDesc())->
+	  getItemExpr();
+
+      attrs[j] = (generator->addMapInfo(col_node->getValueId(), 0))->
+	getAttr();
+    }
+
+  ExpTupleDesc *tupleDesc = 0;
+  ULng32 tupleLength = 0;
+  expGen->processAttributes(getVirtualTableDesc()->getColumnList().entries(),
+			    attrs, ExpTupleDesc::SQLARK_EXPLODED_FORMAT,
+			    tupleLength,
+			    work_atp, exe_util_row_atp_index,
+			    &tupleDesc, ExpTupleDesc::LONG_FORMAT);
+
+  // delete [] attrs;
+  // NADELETEBASIC is used because compiler does not support delete[]
+  // operator yet. Should be changed back later when compiler supports
+  // it.
+  NADELETEBASIC(attrs, generator->wHeap());
+
+  // The stats row will be returned as the last entry of the returned atp.
+  // Change the atp and atpindex of the returned values to indicate that.
+  expGen->assignAtpAndAtpIndex(getVirtualTableDesc()->getColumnList(),
+			       0, returnedDesc->noTuples()-1);
+
+  char * handle = NULL;
+  Lng32 handleLen = 0;
+  if (handle_ && handle_->getOperatorType() == ITM_CONSTANT)
+    {
+      ConstValue * cv = (ConstValue*)handle_;
+      
+      NAString h = cv->getConstStr();
+      handleLen = h.length();
+
+      handle = space->allocateAlignedSpace(handleLen + 1);
+      strcpy(handle, h.data());
+    }
+
+  // when handle is null and extract is from a file that is specified, then the params are:
+  //  stringParam1: file name
+  //  stringParam2: file dir
+  //  stringParam3: other info (like port num for hadoop)
+  char * stringParam1 = NULL;
+  if (NOT stringParam_.isNull())
+    {
+    stringParam1 =  space->allocateAlignedSpace(stringParam_.length() + 1);
+    strcpy(stringParam1, stringParam_.data());
+    }
+
+  char * stringParam2 = NULL;
+  if (NOT stringParam2_.isNull())
+    {
+    stringParam2 = space->allocateAlignedSpace(stringParam2_.length() + 1);
+    strcpy(stringParam2, stringParam2_.data());
+    }
+  else if (handle_ == NULL)
+    {
+      const char* f = ActiveSchemaDB()->getDefaults().
+	getValue(LOB_STORAGE_FILE_DIR);
+
+      stringParam2 = space->allocateAlignedSpace(strlen(f) + 1);
+      strcpy(stringParam2, f);
+    }
+
+  char * stringParam3 = NULL;
+  if (NOT stringParam3_.isNull())
+    {
+     stringParam3 =  space->allocateAlignedSpace(stringParam3_.length() + 1);
+      strcpy(stringParam3, stringParam3_.data());
+    }
+
+  ex_expr * input_expr = 0;
+  ULng32 inputRowLen = 0;
+  if (handle_)
+    {
+      ValueIdList inputVIDList;
+      ItemExpr * inputExpr = new(generator->wHeap())
+        /*
+	Cast(handle_->child(0), 
+	     &handle_->child(0)->getValueId().getType());
+        */
+	Cast(handle_, 
+	     &handle_->getValueId().getType());
+ 
+      //	 SQLVarChar(handle_->getValueId().getType().getNominalSize(),
+      //		    handle_->getValueId().getType().supportsSQLnull()));
+      inputExpr->bindNode(generator->getBindWA());
+      NAType &nat = (NAType&)inputExpr->getValueId().getType();
+      nat.setNullable(TRUE);
+      inputVIDList.insert(inputExpr->getValueId());
+      
+      expGen->
+	processValIdList(inputVIDList,
+			 ExpTupleDesc::SQLARK_EXPLODED_FORMAT,
+			 inputRowLen,
+			 work_atp,
+			 work_row_atp_index
+			 );
+      
+      expGen->
+	generateContiguousMoveExpr(inputVIDList,
+				   0, // don't add conv nodes
+				   work_atp,
+				   work_row_atp_index,
+				   ExpTupleDesc::SQLARK_EXPLODED_FORMAT,
+				   inputRowLen,
+				   &input_expr);
+    }
+
+  Lng32 lst = 0;
+  if (handle_ == NULL)
+    {
+      // extract from a file
+      lst = (Lng32)(CmpCommon::getDefaultNumeric(LOB_STORAGE_TYPE));
+    }
+
+  Lng32 hdfsPort = (Lng32)CmpCommon::getDefaultNumeric(LOB_HDFS_PORT);
+  const char* f = ActiveSchemaDB()->getDefaults().
+    getValue(LOB_HDFS_SERVER);
+  char * hdfsServer = space->allocateAlignedSpace(strlen(f) + 1);
+  strcpy(hdfsServer, f);
+  
+  ComTdbExeUtilLobExtract * exe_util_tdb = new(space) 
+    ComTdbExeUtilLobExtract
+    (
+     handle,
+     handleLen,
+     (toType_ == TO_BUFFER_ ? ComTdbExeUtilLobExtract::TO_BUFFER_ :
+      (toType_ == TO_STRING_ ? ComTdbExeUtilLobExtract::TO_STRING_ :
+       (toType_ == TO_FILE_ ? ComTdbExeUtilLobExtract::TO_FILE_ :
+	(toType_ == TO_EXTERNAL_FROM_STRING_ ? ComTdbExeUtilLobExtract::TO_EXTERNAL_FROM_STRING_ :
+	 (toType_ == TO_EXTERNAL_FROM_FILE_ ? ComTdbExeUtilLobExtract::TO_EXTERNAL_FROM_FILE_ :
+	  ComTdbExeUtilLobExtract::NOOP_))))),
+     intParam_,
+     intParam2_,
+     lst,
+     stringParam1,
+     stringParam2,
+     stringParam3,
+     hdfsServer,
+     hdfsPort,
+     input_expr,
+     inputRowLen,
+     workCriDesc,
+     work_row_atp_index,
+     givenDesc,
+     returnedDesc,
+     (queue_index)8,
+     (queue_index)128,
+#pragma nowarn(1506)   // warning elimination 
+     2,
+     32000);
+#pragma warn(1506)  // warning elimination 
+
+  if (handleInStringFormat_)
+    exe_util_tdb->setHandleInStringFormat(TRUE);
+
+  if (handle_ == NULL)
+    exe_util_tdb->setSrcIsFile(TRUE);
+
+  exe_util_tdb->setWithCreate(withCreate_);
+
+  generator->initTdbFields(exe_util_tdb);
+
+  if (child_tdb)
+    exe_util_tdb->setChildTdb(child_tdb);
+
+  if(!generator->explainDisabled()) {
+    generator->setExplainTuple(
+       addExplainInfo(exe_util_tdb, childExplainTuple, 0, generator));
+  }
+
+  generator->setCriDesc(givenDesc, Generator::DOWN);
+  generator->setCriDesc(returnedDesc, Generator::UP);
+  generator->setGenObj(this, exe_util_tdb);
+
+  // Set the transaction flag.
+  //  if (xnNeeded())
+  //{
+  generator->setTransactionFlag(0);
+  //}
+  
+  return 0;
+}
+
+/////////////////////////////////////////////////////////
+//
+// ExeUtilLobShowddl::codeGen()
+//
+/////////////////////////////////////////////////////////
+short ExeUtilLobShowddl::codeGen(Generator * generator)
+{
+  ExpGenerator * expGen = generator->getExpGenerator();
+  Space * space = generator->getSpace();
+
+  // allocate a map table for the retrieved columns
+  generator->appendAtEnd();
+
+  ex_cri_desc * givenDesc
+    = generator->getCriDesc(Generator::DOWN);
+
+  ex_cri_desc * returnedDesc
+#pragma nowarn(1506)   // warning elimination
+    = new(space) ex_cri_desc(givenDesc->noTuples() + 1, space);
+#pragma warn(1506)  // warning elimination
+
+  ex_cri_desc * workCriDesc = new(space) ex_cri_desc(4, space);
+  const Int32 work_atp = 1;
+  const Int32 exe_util_row_atp_index = 2;
+
+  // Assumption (for now): retrievedCols contains ALL columns from
+  // the table/index. This is because this operator does
+  // not support projection of columns. Add all columns from this table
+  // to the map table.
+  //
+  // The row retrieved from filesystem is returned as the last entry in
+  // the returned atp.
+
+  Attributes ** attrs =
+    new(generator->wHeap())
+    Attributes * [getVirtualTableDesc()->getColumnList().entries()];
+
+  for (CollIndex j = 0; j < getVirtualTableDesc()->getColumnList().entries(); j++)
+    {
+      ItemExpr * col_node
+	= (((getVirtualTableDesc()->getColumnList())[j]).getValueDesc())->
+	  getItemExpr();
+
+      attrs[j] = (generator->addMapInfo(col_node->getValueId(), 0))->
+	getAttr();
+    }
+
+  ExpTupleDesc *tupleDesc = 0;
+  ULng32 tupleLength = 0;
+  expGen->processAttributes(getVirtualTableDesc()->getColumnList().entries(),
+			    attrs, ExpTupleDesc::SQLARK_EXPLODED_FORMAT,
+			    tupleLength,
+			    work_atp, exe_util_row_atp_index,
+			    &tupleDesc, ExpTupleDesc::LONG_FORMAT);
+
+  // delete [] attrs;
+  // NADELETEBASIC is used because compiler does not support delete[]
+  // operator yet. Should be changed back later when compiler supports
+  // it.
+  NADELETEBASIC(attrs, generator->wHeap());
+
+  // The stats row will be returned as the last entry of the returned atp.
+  // Change the atp and atpindex of the returned values to indicate that.
+  expGen->assignAtpAndAtpIndex(getVirtualTableDesc()->getColumnList(),
+			       0, returnedDesc->noTuples()-1);
+  
+  NAString tn = "\"";
+  tn += getTableName().getQualifiedNameObj().getCatalogName();
+  tn += "\".";
+  tn += getTableName().getQualifiedNameObj().getSchemaName();
+  tn += ".";
+  tn += getTableName().getQualifiedNameObj().getObjectName();
+  char * tablename = space->AllocateAndCopyToAlignedSpace(tn, 0);
+  /*
+  char * tablename = 
+    space->AllocateAndCopyToAlignedSpace
+	(generator->genGetNameAsAnsiNAString(getTableName()), 0);
+  */
+
+  char * schemaName = 
+    space->AllocateAndCopyToAlignedSpace
+    (getTableName().getQualifiedNameObj().getSchemaName(), 0);
+
+  char * lobNumArray = NULL;
+  char * lobLocArray = NULL;
+
+  const NATable * naTable = getUtilTableDesc()->getNATable();
+  Lng32 numLOBs = 0;
+  short maxLocLen = 0;
+  if (naTable->hasLobColumn())
+    {
+      for (CollIndex i = 0; i < naTable->getNAColumnArray().entries(); i++)
+	{
+	  
+	  NAColumn *col = naTable->getNAColumnArray()[i];
+	  if (col->getType()->isLob())
+	    {
+	      numLOBs++;
+
+	      maxLocLen = MAXOF(maxLocLen, 
+				(short)strlen(col->lobStorageLocation()) + 1);
+	    } // if
+	} // for
+    }
+
+  if (numLOBs > 0)
+    {
+      lobNumArray = space->allocateAlignedSpace(numLOBs*2);
+      lobLocArray = space->allocateAlignedSpace(numLOBs * maxLocLen);
+
+      const NATable * naTable = getUtilTableDesc()->getNATable();
+      CollIndex j = 0;
+
+      for (CollIndex i = 0; i < naTable->getNAColumnArray().entries(); i++)
+	{
+
+	  NAColumn *col = naTable->getNAColumnArray()[i];
+	  if (col->getType()->isLob())
+	    {
+	      *(short*)(&lobNumArray[2*j]) = col->lobNum();
+
+	      strcpy(&lobLocArray[j*maxLocLen], col->lobStorageLocation());
+
+	      j++;
+	    }
+	}
+    }
+
+  ComTdbExeUtil * exe_util_tdb = new(space) 
+    ComTdbExeUtilLobShowddl
+    (
+     tablename,
+     schemaName,
+     strlen(schemaName),
+     objectUID_,
+     numLOBs,
+     lobNumArray,
+     lobLocArray,
+     maxLocLen,
+     (short)sdOptions_,
+     givenDesc,
+     returnedDesc,
+     (queue_index)8,
+     (queue_index)128,
+#pragma nowarn(1506)   // warning elimination 
+     2,
+     32000);
+#pragma warn(1506)  // warning elimination 
+  
+  generator->initTdbFields(exe_util_tdb);
+  
+  if(!generator->explainDisabled()) {
+    generator->setExplainTuple(
+       addExplainInfo(exe_util_tdb, 0, 0, generator));
+  }
+
+  generator->setCriDesc(givenDesc, Generator::DOWN);
+  generator->setCriDesc(returnedDesc, Generator::UP);
+  generator->setGenObj(this, exe_util_tdb);
+
+  // Set the transaction flag.
+  generator->setTransactionFlag(0);
+  
+  return 0;
+}
+// sss #endif
+
 // -----------------------------------------------------------------------
 // HiveMDaccessFunc methods
 // -----------------------------------------------------------------------
@@ -5113,7 +5524,7 @@ short ExeUtilHbaseCoProcAggr::codeGen(Generator * generator)
   TableDesc *tableDesc = getUtilTableDesc();
   if (tableDesc->getNATable()->isSeabaseTable())
   {
-    if (!tableDesc->getNATable()->isSeabaseMDTable())
+    if (tableDesc->getNATable()->isEnabledForDDLQI())
       generator->objectUids().insert(
         tableDesc->getNATable()->objectUid().get_value());
   }
@@ -5346,6 +5757,10 @@ short ExeUtilHBaseBulkLoad::codeGen(Generator * generator)
           getAttr();
       }
 
+    // Check authorization
+    if (!isAuthorized(generator))
+      GenExit();
+
     ExpTupleDesc *tupleDesc = 0;
     ULng32 tupleLength = 0;
     expGen->processAttributes(getVirtualTableDesc()->getColumnList().entries(),
@@ -5499,6 +5914,123 @@ short ExeUtilHBaseBulkLoadTask::codeGen(Generator * generator)
 }
 
 
+///////////////////////////////////////////////////////////
+//
+// ExeUtilHBaseBulkLoad::isAuthorized()
+//
+// Verifies that current user is authorized.
+//
+//    To perform the LOAD you must:
+//      Be DB__ROOT OR
+//      Have correct privileges including
+//        SELECT and INSERT on the Target table  
+//        plus DELETE if TRUNCATE is specified  OR
+//      Have the MANAGE_LOAD component privilege
+//
+// return: TRUE if authorized
+//         FALSE is not authorized.
+//
+// If not authorized, then the ComDiags area is set up
+// with the reason.
+//
+// Code is organized to do the less performance
+// intensive checks first.
+//
+// TODO:  make this a virtual function in the parent class
+////////////////////////////////////////////////////////////
+
+NABoolean ExeUtilHBaseBulkLoad::isAuthorized(Generator * generator)
+{
+  // If not enabled, skip checks
+  if (!generator->currentCmpContext()->isAuthorizationEnabled())
+    return TRUE;
+
+  // DB__ROOT is always authorized
+  if (ComUser::isRootUserID())
+    return TRUE;
+
+  // get privileges from the NATable structure
+  NATable *naTable = generator->getBindWA()->getNATable(getTableName());
+  if ((! naTable) || (generator->getBindWA()->errStatus()))
+    {
+      if (!CmpCommon::diags()->getNumber(DgSqlCode::ERROR_) > 0)
+        *CmpCommon::diags() << DgSqlCode(-4082) <<
+          DgTableName(getTableName().getQualifiedNameAsString().data());
+
+      return FALSE;
+    }
+
+  // If this is a special table, then assume privileges okay
+  if (naTable->getExtendedQualName().isSpecialTable())
+    return TRUE;
+
+  // If no privs available, return 1034 (unable to get privilege information)
+  PrivMgrUserPrivs* privs = naTable->getPrivInfo();
+  if (privs == NULL)
+    {
+      *CmpCommon::diags() << DgSqlCode( -1034 );
+      return FALSE;
+    }
+
+  // Verify user has the necesssary privileges
+  NABoolean havePrivs = TRUE;
+  Lng32 diagsMark = CmpCommon::diags()->mark();
+
+  if (!privs->hasSelectPriv())
+    {
+      havePrivs = FALSE;
+      *CmpCommon::diags()
+        << DgSqlCode( -4481 )
+        << DgString0( "SELECT" )
+        << DgString1(naTable->getTableName().getQualifiedNameAsAnsiString());
+    }
+
+  if (!privs->hasInsertPriv())
+    {
+      havePrivs = FALSE;
+      *CmpCommon::diags()
+        << DgSqlCode( -4481 )
+        << DgString0( "INSERT" )
+        << DgString1( naTable->getTableName().getQualifiedNameAsAnsiString() );
+    }
+  if (truncateTable_ && !privs->hasDeletePriv())
+    {
+      havePrivs = FALSE;
+      *CmpCommon::diags()
+        << DgSqlCode( -4481 )
+        << DgString0( "DELETE" )
+        << DgString1( naTable->getTableName().getQualifiedNameAsAnsiString() );
+    }
+ 
+  if (!havePrivs)
+    {
+      // Check to see if have the MANAGE_LOAD component privilege
+       NAString privMgrMDLoc =
+              NAString(CmpSeabaseDDL::getSystemCatalogStatic()) +
+              NAString(".\"") +
+              NAString(SEABASE_PRIVMGR_SCHEMA) +
+              NAString("\"");
+
+      PrivMgrComponentPrivileges componentPrivileges
+      (std::string(privMgrMDLoc.data()),CmpCommon::diags());
+      if (componentPrivileges.hasSQLPriv(ComUser::getCurrentUser(),SQLOperation::MANAGE_LOAD,true))
+        {
+          CmpCommon::diags()->rewind(diagsMark);
+          havePrivs = TRUE;
+        }
+    }
+
+  if (havePrivs)
+    return TRUE;
+
+  // By this time the diags() area should contain an error.  If not -
+  // add error 1034 (unable to get privilege information)
+  if (CmpCommon::diags()->getNumber(DgSqlCode::ERROR_) == 0)
+     *CmpCommon::diags() << DgSqlCode( -1034 );
+ 
+  return FALSE;
+}
+
 
 ////////////////////////////////////////////////////////
 //
@@ -5566,6 +6098,10 @@ short ExeUtilHBaseBulkUnLoad::codeGen(Generator * generator)
           getAttr();
       }
 
+    // Check authorization
+    if (!isAuthorized(generator))
+      GenExit();
+    
     ExpTupleDesc *tupleDesc = 0;
     ULng32 tupleLength = 0;
     expGen->processAttributes(getVirtualTableDesc()->getColumnList().entries(),
@@ -5626,3 +6162,96 @@ short ExeUtilHBaseBulkUnLoad::codeGen(Generator * generator)
 
   return 0;
 }
+
+///////////////////////////////////////////////////////////
+//
+// ExeUtilHBaseBulkUnLoad::isAuthorized()
+//
+// Verifies that current user is authorized.
+//
+//    To perform the UNLOAD you must:
+//      Be DB__ROOT OR
+//      Have SELECT privilege on the target table OR
+//      Have the MANAGE_LOAD component privilege
+//
+// return: TRUE if authorized
+//         FALSE is not authorized.
+//
+// If not authorized, then the ComDiags area is set up
+// with the reason.
+//
+// Checks are performed to do the less performance
+// intensive checks first.
+//
+// TODO:  make this a virtual function in the parent class
+////////////////////////////////////////////////////////////
+
+NABoolean ExeUtilHBaseBulkUnLoad::isAuthorized(Generator * generator)
+{
+  // If not enabled, skip checks
+  if (!generator->currentCmpContext()->isAuthorizationEnabled())
+    return TRUE;
+
+  // DB__ROOT is always authorized
+  if (ComUser::isRootUserID())
+    return TRUE;
+
+  // get privileges from the NATable structure
+  NATable *naTable = generator->getBindWA()->getNATable(getTableName());
+  if ((! naTable) || (generator->getBindWA()->errStatus()))
+    {
+      if (!CmpCommon::diags()->getNumber(DgSqlCode::ERROR_) > 0)
+        *CmpCommon::diags() << DgSqlCode(-4082) <<
+          DgTableName(getTableName().getQualifiedNameAsString().data());
+
+      return FALSE;
+    }
+
+  // If this is a special table, then assume privileges okay
+  if (naTable->getExtendedQualName().isSpecialTable())
+    return TRUE;
+
+  // If no privs available, return 1034 (unable to get privilege information)
+  PrivMgrUserPrivs* privs = naTable->getPrivInfo();
+  if (privs == NULL)
+    {
+      *CmpCommon::diags() << DgSqlCode( -1034 );
+      return FALSE;
+    }
+
+  // Verify current user has the necesssary privileges.
+  Lng32 diagsMark = CmpCommon::diags()->mark();
+  if (privs->hasSelectPriv())
+    return TRUE;
+  else
+    {
+      *CmpCommon::diags()
+        << DgSqlCode( -4481 )
+        << DgString0( "SELECT" )
+        << DgString1(naTable->getTableName().getQualifiedNameAsAnsiString());
+    }
+
+  // Check to see if current user has the MANAGE_LOAD component privilege
+  NAString privMgrMDLoc =
+      NAString(CmpSeabaseDDL::getSystemCatalogStatic()) +
+      NAString(".\"") +
+      NAString(SEABASE_PRIVMGR_SCHEMA) +
+      NAString("\"");
+
+  PrivMgrComponentPrivileges compPrivs
+   (std::string(privMgrMDLoc.data()),CmpCommon::diags());
+  if (compPrivs.hasSQLPriv(ComUser::getCurrentUser(),SQLOperation::MANAGE_LOAD,true))
+    {
+      CmpCommon::diags()->rewind(diagsMark);
+      return TRUE;
+    }
+
+  // By this time the diags() area should contain an error. If not -
+  // add error 1034 (unable to get privilege information)
+  if (CmpCommon::diags()->getNumber(DgSqlCode::ERROR_) == 0)
+     *CmpCommon::diags() << DgSqlCode( -1034 );
+
+  return FALSE;
+}
+
+

@@ -7872,21 +7872,26 @@ ItemExpr *ColReference::bindNode(BindWA *bindWA)
 
   if (sqlCode) {
 #ifndef NDEBUG					// ##tmp
-	BindContext *ctxt = bindWA->getCurrentScope()->context();
-	char ii = ctxt->inItemList() ?    'i' : ' ';
-	char jj = ctxt->inJoinPred() ?    'j' : ' ';
-	char mm = ctxt->inMultaryPred() ? 'm' : ' ';
- Int32 iia = ii == ' ' ? -99 : ctxt->inItemList()->getArity();
- Int32 iic = ii == ' ' ? -99 : ctxt->inItemList()->currChildNo();
- Int32 jja = jj == ' ' ? -99 : ctxt->inJoinPred()->getArity();
- Int32 jjc = jj == ' ' ? -99 : ctxt->inJoinPred()->currChildNo();
- Int32 mma = mm == ' ' ? -99 : ctxt->inMultaryPred()->getArity();
- Int32 mmc = mm == ' ' ? -99 : ctxt->inMultaryPred()->currChildNo();
-	cout << getColRefNameObj().getColRefAsAnsiString()
-		<< "	(" << ii << " " << iia << " " << iic << ") "
-		<< "	(" << jj << " " << jja << " " << jjc << ") "
-		<< "	(" << mm << " " << mma << " " << mmc << ") "
-		<< endl;
+    // The following debug code is often useful when debugging 
+    // internal queries when the metadata changes. Just set the
+    // environment variable in a debug build to see the output.
+    if (getenv("COLREFERENCE_DEBUG")) {
+      BindContext *ctxt = bindWA->getCurrentScope()->context();
+      char ii = ctxt->inItemList() ?    'i' : ' ';
+      char jj = ctxt->inJoinPred() ?    'j' : ' ';
+      char mm = ctxt->inMultaryPred() ? 'm' : ' ';
+      Int32 iia = ii == ' ' ? -99 : ctxt->inItemList()->getArity();
+      Int32 iic = ii == ' ' ? -99 : ctxt->inItemList()->currChildNo();
+      Int32 jja = jj == ' ' ? -99 : ctxt->inJoinPred()->getArity();
+      Int32 jjc = jj == ' ' ? -99 : ctxt->inJoinPred()->currChildNo();
+      Int32 mma = mm == ' ' ? -99 : ctxt->inMultaryPred()->getArity();
+      Int32 mmc = mm == ' ' ? -99 : ctxt->inMultaryPred()->currChildNo();
+      cout << getColRefNameObj().getColRefAsAnsiString()
+        << "	(" << ii << " " << iia << " " << iic << ") "
+        << "	(" << jj << " " << jja << " " << jjc << ") "
+        << "	(" << mm << " " << mma << " " << mmc << ") "
+        << endl;
+    }
 #endif // NDEBUG
     bindWA->setErrStatus();
     return this;
@@ -10146,13 +10151,13 @@ Int32 ZZZBinderFunction::getPadLength (ItemExpr* padLengthExpr, BindWA* bindWA)
 	if (cv->canGetExactNumericValue())
 	{ 
 	   padLengthMax = (Int32) cv->getExactNumericValue();
-           /*    if ( padLengthMax > CONST_32K ) 
-           {
-	     *CmpCommon::diags() << DgSqlCode(-4129)
-                                << DgString0(getTextUpper());
-	     bindWA->setErrStatus();
-	     return -2;
-             } */
+           if ( padLengthMax > CmpCommon::getDefaultNumeric(TRAF_MAX_CHARACTER_COL_LENGTH))
+             {
+               *CmpCommon::diags() << DgSqlCode(-4129)
+                                   << DgString0(getTextUpper());
+               bindWA->setErrStatus();
+               return -2;
+             } 
         }
       }
     }  // padLength is a constant
@@ -11118,11 +11123,12 @@ ItemExpr *ZZZBinderFunction::bindNode(BindWA *bindWA)
           {
             sprintf(buf, "CAST(@A1 AS CHAR(%d) CHARACTER SET UCS2) ;", rpadLength);
           }
-          if ( rpadLength > CONST_32K )
+
+          if ( rpadLength > CmpCommon::getDefaultNumeric(TRAF_MAX_CHARACTER_COL_LENGTH))
           {
              //Note: We claim error occurred in "REPEAT" here just so we get a consistent
              //error message regardless of whether or not the CAST optimization is used.
-             *CmpCommon::diags() << DgSqlCode(-4129) << DgString0("REPEAT");
+            *CmpCommon::diags() << DgSqlCode(-4129) << DgString0("REPEAT");
              *CmpCommon::diags() << DgSqlCode(-4062) << DgString0("RPAD");
              bindWA->setErrStatus();
              return this;
@@ -12431,7 +12437,7 @@ ItemExpr *HbaseColumnLookup::bindNode(BindWA *bindWA)
   if (nodeIsBound())
     return getValueId().getItemExpr();
 
-  // Binds self; Binds children; ColumnCreate::synthesize();
+  // Binds self; Binds children; ColumnLookup::synthesize();
   boundExpr = Function::bindNode(bindWA);
   if (bindWA->errStatus()) 
     return NULL;
@@ -12469,7 +12475,7 @@ ItemExpr *HbaseColumnsDisplay::bindNode(BindWA *bindWA)
   if (nodeIsBound())
     return getValueId().getItemExpr();
 
-  // Binds self; Binds children; ColumnCreate::synthesize();
+  // Binds self; Binds children; ColumnDisplay::synthesize();
   boundExpr = Function::bindNode(bindWA);
   if (bindWA->errStatus()) 
     return NULL;
@@ -12532,18 +12538,38 @@ ItemExpr *HbaseColumnCreate::bindNode(BindWA *bindWA)
       HbaseColumnCreateOptions * hcco = (*hccol_)[i];
       HbaseColumnCreate::HbaseColumnCreateOptions::ConvType co;
 
-      ItemExpr * colValue = hcco->child0();
+      ItemExpr * colName = hcco->colName();
+      colName = colName->bindNode(bindWA);
+      if (bindWA->errStatus()) 
+        return NULL;
+      
+      // type cast any params
+      ValueId vid1 = colName->getValueId();
+      SQLVarChar c1(CmpCommon::getDefaultNumeric(HBASE_MAX_COLUMN_NAME_LENGTH));
+      vid1.coerceType(c1, NA_CHARACTER_TYPE);
+      
+      hcco->setColName(colName);
+
+      ItemExpr * colValue = hcco->colVal();
       colValue = colValue->bindNode(bindWA);
       if (bindWA->errStatus()) 
 	return NULL;
 
-      hcco->setChild0(colValue);
+      // type cast any params
+      ValueId vid2 = colValue->getValueId();
+      SQLVarChar c2(CmpCommon::getDefaultNumeric(HBASE_MAX_COLUMN_VAL_LENGTH));
+      vid2.coerceType(c2, NA_CHARACTER_TYPE);
 
-      const NAType &type0 = 
+      hcco->setColVal(colValue);
+
+      const NAType &typeColName = 
+	colName->castToItemExpr()->getValueId().getType();
+
+      const NAType &typeColVal = 
 	colValue->castToItemExpr()->getValueId().getType();
 
-      if (colNameMaxLen_ < hcco->hbaseCol().length())
-	colNameMaxLen_ = hcco->hbaseCol().length();
+      if (colNameMaxLen_ < typeColName.getNominalSize())
+	colNameMaxLen_ = typeColName.getNominalSize();
 
       if (i == 0) // first entry
 	{
@@ -12552,7 +12578,7 @@ ItemExpr *HbaseColumnCreate::bindNode(BindWA *bindWA)
 	  if (firstType)
 	    resultType = firstType;
 	  else
-	    resultType = &(NAType&)type0;
+	    resultType = &(NAType&)typeColVal;
 	  if (resultType->getTypeQualifier() != NA_CHARACTER_TYPE)
 	    {
 	      *CmpCommon::diags() << DgSqlCode(-4221)
@@ -12583,10 +12609,10 @@ ItemExpr *HbaseColumnCreate::bindNode(BindWA *bindWA)
 
       if (co == HbaseColumnCreate::HbaseColumnCreateOptions::NONE)
 	{
-	  if (colValMaxLen_ < type0.getNominalSize())
-	    colValMaxLen_ = type0.getNominalSize();
+	  if (colValMaxLen_ < typeColVal.getNominalSize())
+	    colValMaxLen_ = typeColVal.getNominalSize();
 
-	  if (type0.supportsSQLnull())
+	  if (typeColVal.supportsSQLnull())
 	    resultNull = TRUE;
 	}
     } // for
@@ -12596,24 +12622,24 @@ ItemExpr *HbaseColumnCreate::bindNode(BindWA *bindWA)
 							     resultNull);
   
   Lng32 totalLen = 0;
-  totalLen += sizeof(numEntries) + sizeof(colNameMaxLen_) + sizeof(colValMaxLen_);
+  totalLen += sizeof(numEntries) + sizeof(colNameMaxLen_) 
+    + sizeof(short)/*VCLenIndicatorSize*/ + sizeof(colValMaxLen_);
   
   for (Lng32 i = 0; i < numEntries; i++)
     {
       HbaseColumnCreateOptions * hcco = (*hccol_)[i];
 
-      ConstValue * cv = new(bindWA->wHeap()) ConstValue(hcco->hbaseCol());
       NAType * cnType = new(bindWA->wHeap()) SQLVarChar(colNameMaxLen_, FALSE);
       ItemExpr * cnChild =
-	new (bindWA->wHeap()) Cast(cv, cnType);
+	new (bindWA->wHeap()) Cast(hcco->colName(), cnType);
       cnChild = cnChild->bindNode(bindWA);
-      hcco->setColNameIE(cnChild);
+      hcco->setColName(cnChild);
       totalLen += cnChild->getValueId().getType().getTotalSize();
 
       ItemExpr * newChild =
-	new (bindWA->wHeap()) Cast(hcco->child0(), childResultType);
+	new (bindWA->wHeap()) Cast(hcco->colVal(), childResultType);
       newChild = newChild->bindNode(bindWA);
-      hcco->setChild0(newChild);
+      hcco->setColVal(newChild);
       totalLen += newChild->getValueId().getType().getTotalSize();      
     }
 
@@ -12627,18 +12653,52 @@ ItemExpr *HbaseColumnCreate::bindNode(BindWA *bindWA)
   return boundExpr;
 }
 
-//---------------------------------------------------------------------------
-//
-// member functions for class SequenceValue
-//
-//---------------------------------------------------------------------------
-ItemExpr *SequenceValue::bindNode(BindWA *bindWA)
+
+// -----------------------------------------------------------------------
+// member functions for class Loboper, LOBinsert, LOBselect, LOBdelete
+// -----------------------------------------------------------------------
+
+ItemExpr *LOBinsert::bindNode(BindWA *bindWA)
 {
   ItemExpr * boundExpr = NULL;
 
   if (nodeIsBound())
     return getValueId().getItemExpr();
 
+  // Binds self; Binds children; LOBoper::synthesize();
+  boundExpr = LOBoper::bindNode(bindWA);
+  if (bindWA->errStatus()) return NULL;
+ 
+  return boundExpr;
+} // LOBinsert::bindNode()
+
+ItemExpr *LOBselect::bindNode(BindWA *bindWA)
+{
+  ItemExpr * boundExpr = NULL;
+
+  if (nodeIsBound())
+    return getValueId().getItemExpr();
+
+
+  // For now LOBselect is allowed only in the top most select list
+  // check that first, or else give an error
+
+
+  // Binds self; Binds children; LOBoper::synthesize();
+  boundExpr = LOBoper::bindNode(bindWA);
+  if (bindWA->errStatus()) return NULL;
+ 
+  return boundExpr;
+} // LOBselect::bindNode()
+
+
+
+ItemExpr *SequenceValue::bindNode(BindWA *bindWA)
+{
+  ItemExpr * boundExpr = NULL;
+
+  if (nodeIsBound())
+    return getValueId().getItemExpr();
   // Binds self; Binds children; SequenceValue::synthesize();
   boundExpr = Function::bindNode(bindWA);
   if (bindWA->errStatus()) 
@@ -12736,3 +12796,4 @@ NABoolean RowNumFunc::canBeUsedInGBorOB(NABoolean setErr)
 
   return FALSE;
 }
+

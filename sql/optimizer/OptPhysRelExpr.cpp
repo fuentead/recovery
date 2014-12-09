@@ -13095,11 +13095,12 @@ computeDP2CostDataThatDependsOnSPP(
 
         } // if we have range partitioning
       else
-        if ( physicalPartFunc.isATableHashPartitioningFunction()
-           AND
-	     (
-                (scan.getOperatorType() == REL_FILE_SCAN)
-             )
+        if ( ( physicalPartFunc.isATableHashPartitioningFunction() AND
+               (scan.getOperatorType() == REL_FILE_SCAN)
+             ) OR
+             ( indexDesc.isPartitioned() AND
+               (scan.getOperatorType() == REL_HBASE_ACCESS) AND
+               (CmpCommon::getDefault(NCM_HBASE_COSTING) == DF_ON))
            )
         {
 
@@ -13250,6 +13251,11 @@ computeDP2CostDataThatDependsOnSPP(
 	    }
 
 
+          CollIndex numParts = 1;
+          if (scan.getOperatorType() == REL_HBASE_ACCESS)
+            numParts = indexDesc.getPartitioningFunction()->getCountOfPartitions();
+          else
+            numParts = physicalPartFunc.getCountOfPartitions();
 
 	  // The order of the IF conditions in the following statement, is
 	  // CRITICAL. It is possible that partitioning-key list may be
@@ -13296,14 +13302,15 @@ computeDP2CostDataThatDependsOnSPP(
 	      // Hence, each outer probe goes to a single
 	      // inner table partition.
 
-              if (CURRSTMT_OPTDEFAULTS->incorporateSkewInCosting())
+              if (CURRSTMT_OPTDEFAULTS->incorporateSkewInCosting() AND
+                  physicalPartFunc.isATableHashPartitioningFunction())
               {
                  CostScalar probesAtBusyStream =
                      myContext.getInputLogProp()->getCardOfBusiestStream(
                                       &physicalPartFunc,
-                                      physicalPartFunc.getCountOfPartitions(),
+                                      numParts,
                                       &scanGroupAttr,
-                                      physicalPartFunc.getCountOfPartitions(),
+                                      numParts,
                                       TRUE);
 
                  dp2CostInfo.setProbesAtBusiestStream(probesAtBusyStream);
@@ -13312,8 +13319,7 @@ computeDP2CostDataThatDependsOnSPP(
 	      dp2CostInfo.setRepeatCountForOperatorsInDP2
 		(
 		   (myContext.getInputLogProp()->getResultCardinality()
-			  /physicalPartFunc.getCountOfPartitions()).
-			 getCeiling().minCsOne()
+			  /numParts).getCeiling().minCsOne()
 		 );
 
               dp2CostInfo.setRepeatCountState
@@ -13321,8 +13327,7 @@ computeDP2CostDataThatDependsOnSPP(
 
 	      // indicate in the node map that all partitions will be
 	      // accessed during plan evaluation.
-	      NodeMapPtr->setEstNumActivePartitionsAtRuntime
-		(physicalPartFunc.getCountOfPartitions());
+	      NodeMapPtr->setEstNumActivePartitionsAtRuntime(numParts);
 	    }
 	  else
 	    {
@@ -13339,7 +13344,7 @@ computeDP2CostDataThatDependsOnSPP(
 	      // indicate in the node map that all partitions will be
 	      // accessed during plan evaluation.
 	      NodeMapPtr->setEstNumActivePartitionsAtRuntime
-		(physicalPartFunc.getCountOfPartitions());
+		(numParts);
 	    };
 
 	  }; // inner table is hash-partitioned
@@ -14010,86 +14015,6 @@ PhysicalProperty * RelExpr::synthDP2PhysicalProperty(
   }
 
   usePapa = (usePapa OR numPAs > numEsps);
-
-  // ---------------------------------------------------------------------
-  // Handle operator-specific cases and adjust usePapa, numPAs
-  // ---------------------------------------------------------------------
-  switch (getOperatorType())
-  {
-    case REL_DP2_INSERT_CURSOR:
-    case REL_DP2_INSERT_SIDETREE:
-    case REL_DP2_INSERT_VSBB:
-
-      {
-        DP2Insert *dp2Insert = (DP2Insert *)this;
-        if (dp2Insert->getInsertType() != DP2Insert::SIMPLE_INSERT)
-        {
-
-          NABoolean grouping = FALSE;
-          if (logicalPartFunc->isAReplicateNoBroadcastPartitioningFunction())
-            {
-
-              // Does the REP-N really replicate to all partitions or is there
-              // some grouping going on.  If it does replicate, then each
-              // instance may access all partitions via PAs.  If there is
-              // grouping, then each instance will access a non-overlapping
-              // group of partitions.  So in this case the total number of PAs
-              // across all instances is just the total number of partitions.
-
-              const RequireReplicateNoBroadcast *rnbReq =
-                logPartReq->castToRequireReplicateNoBroadcast();
-
-              if(rnbReq) 
-                {
-                  const PartitioningFunction *parentPartFunc = rnbReq->getParentPartFunc();
-                  Lng32 factor;
-                  if(parentPartFunc)
-                    grouping = parentPartFunc->isAGroupingOf(*physicalPartFunc, &factor);
-                }
-            }
-
-
-          // VSBB insert, needs one PA for each target partition in
-          // order to flush the VSBB buffers at the end of the statement.
-          Lng32 numParts = physicalPartFunc->getCountOfPartitions();
-	  usePapa = (usePapa OR numParts > 1);
-          if(!grouping) {
-            numPAs = numEsps * numParts;
-          }
-          if ((numPAs / numEsps) > maxPAsPerProcess)
-            return NULL;
-        }
-        // Executor cannot handle multiple ESPs as the right child of a
-        // nested join, for write stmts. It does not seem to use the PIVs
-        // properly, and so all rows to be written get sent to all the ESPs.
-        // Scan does handle this case.  Note this can only happen when the
-        // nested join itself is not running in parallel.
-        if (NOT (logicalPartFunc->isASinglePartitionPartitioningFunction() OR
-                 logicalPartFunc->isAReplicateNoBroadcastPartitioningFunction()))
-        {
-          return NULL;
-        }
-      }
-      break;
-
-    case REL_DP2_UPDATE_CURSOR:
-    case REL_DP2_DELETE_CURSOR:
-      // Executor cannot handle multiple ESPs as the right child of a
-      // nested join, for write stmts. It does not seem to use the PIVs
-      // properly, and so all rows to be written get sent to all the ESPs.
-      // Scan does handle this case.  Note it can only happen when the
-      // nested join itself is not running in parallel.
-      if (NOT (logicalPartFunc->isASinglePartitionPartitioningFunction() OR
-               logicalPartFunc->isAReplicateNoBroadcastPartitioningFunction()))
-      {
-        return NULL;
-      }
-      break;
-
-    default:
-      // do nothing for "normal" operators
-      break;
-  }
 
   //  The number of cpus executing DP2's cannot be more than the number
   //  of PAs. In other words, cannot be using more cpus than there are
@@ -15970,265 +15895,6 @@ NABoolean GenericUpdate::okToAttemptESPParallelism (
 
 } // GenericUpdate::okToAttemptESPParallelism()
 
-// -----------------------------------------------------------------------
-// member functions for class DP2Insert
-// -----------------------------------------------------------------------
-CostMethod*
-DP2Insert::costMethod() const
-{
-
-  static THREAD_P CostMethodDP2Insert *m = NULL;
-  if (m == NULL)
-    m = new (GetCliGlobals()->exCollHeap()) CostMethodDP2Insert();
-  return m;
-
-} // DP2Insert::costMethod()
-
-//------------------------------------------------------------------------
-// member function of DP2SideTreeInsert
-//-------------------------------------------------------------------------
-CostMethod *
-DP2SideTreeInsert::costMethod() const
-{
-  static THREAD_P CostMethodDP2SideTreeInsert *m = NULL;
-  if (m == NULL)
-    m = new (GetCliGlobals()->exCollHeap()) CostMethodDP2SideTreeInsert();
-  return m;
-}
-
-//------------------------------------------------------------------------
-// member function of DP2VSBBInsert
-//------------------------------------------------------------------------
-CostMethod *
-DP2VSBBInsert::costMethod() const
-{
-  static THREAD_P CostMethodDP2VSBBInsert *m = NULL;
-  m = new(GetCliGlobals()->exCollHeap()) CostMethodDP2VSBBInsert();
-  return m;
-}
-
-// -----------------------------------------------------------------------
-// member functions for class DP2Update
-// -----------------------------------------------------------------------
-// QSTUFF
-
-PhysicalProperty*
-DP2Update::synthPhysicalProperty(const Context* myContext,
-                                const Lng32     planNumber)
-{
-  // synthesized order
-  ValueIdList sortOrderVEG = NULL;
-
-  sortOrderVEG =
-          getIndexDesc()->getOrderOfKeyValues();
-
-  // ---------------------------------------------------------------------
-  // Remove from the sortOrder those columns that are equal to constants
-  // or input values.  Also, remove from sortOrder those columns that are
-  // not in the characteristic outputs.
-  //   It is possible that the characteristic outputs
-  // will not contain the base columns, but rather expressions
-  // involving the base columns. For example, if the user specified
-  // "select b+1 from t order by 1;", and "b" is the primary key,
-  // then the characteristic output will only contain the valueId for the
-  // expression "b+1" - it will not contain the value id for "b". So,
-  // even though "b" is the primary key, we will fail to find it in the
-  // characteristic outputs and thus we will not synthesize the sort key.
-  // To solve this, we first check for the base column in the
-  // characteristic outputs. If we find it, great. But if we don't, we
-  // need to see if the base column is included in the SIMPLIFIED form
-  // of the characteristic outputs. If it is, then we need to change
-  // the sort key to include the valueId for the expression "b+1" instead
-  // of "b". This is because we cannot synthesize anything in the sort
-  // key that is not in the characteristic outputs, but if something
-  // is sorted by "b" then it is surely sorted by "b+1". We have
-  // coined the expression "complify" to represent this operation.
-  // ---------------------------------------------------------------------
-  sortOrderVEG.removeCoveredExprs(getGroupAttr()->getCharacteristicInputs());
-  sortOrderVEG.complifyAndRemoveUncoveredSuffix(
-                   getGroupAttr()->getCharacteristicOutputs()) ;
-
-
-  // ---------------------------------------------------------------------
-  // if this is a reverse scan, apply an inversion function to
-  // each of the ordering columns
-  // ---------------------------------------------------------------------
-  if (getReverseScan())
-    {
-      ItemExpr *inverseCol;
-
-      for (Lng32 i = 0; i < (Lng32)sortOrderVEG.entries(); i++)
-        {
-          ItemExpr *ix = sortOrderVEG[i].getItemExpr();
-
-          if (ix->getOperatorType() == ITM_INVERSE)
-            {
-              // remove the inverse operator, the reverse scan
-              // cancels it out
-              inverseCol = ix->child(0);
-            }
-          else
-            {
-              // add an inverse operator on top
-              inverseCol = new(CmpCommon::statementHeap())
-                InverseOrder(ix);
-              inverseCol->synthTypeAndValueId();
-            }
-          sortOrderVEG[i] = inverseCol->getValueId();
-        }
-    }
-
-  // ---------------------------------------------------------------------
-  // call a static helper method shared between scan and ins/upd/del
-  // ---------------------------------------------------------------------
-  return synthDP2PhysicalProperty(myContext,
-                                  sortOrderVEG,
-                                  getIndexDesc(),
-                                  getPartKey());
-
-} // DP2Update::synthPhysicalProperty()
-
-// QSTUFF
-
-CostMethod*
-DP2Update::costMethod() const
-{
-
-  static THREAD_P CostMethodDP2Update *m = NULL;
-  if (m == NULL)
-    m = new (GetCliGlobals()->exCollHeap()) CostMethodDP2Update();
-  return m;
-
-} // DP2Update::costMethod()
-
-// -----------------------------------------------------------------------
-// member functions for class DP2Delete
-// -----------------------------------------------------------------------
-
-// QSTUFF
-PhysicalProperty*
-DP2Delete::synthPhysicalProperty(const Context* myContext,
-                                const Lng32     planNumber)
-{
-  // synthesized order
-  ValueIdList sortOrderVEG = NULL;
-
-  sortOrderVEG =
-          getIndexDesc()->getOrderOfKeyValues();
-
-  // ---------------------------------------------------------------------
-  // Remove from the sortOrder those columns that are equal to constants
-  // or input values.  Also, remove from sortOrder those columns that are
-  // not in the characteristic outputs.
-  //   It is possible that the characteristic outputs
-  // will not contain the base columns, but rather expressions
-  // involving the base columns. For example, if the user specified
-  // "select b+1 from t order by 1;", and "b" is the primary key,
-  // then the characteristic output will only contain the valueId for the
-  // expression "b+1" - it will not contain the value id for "b". So,
-  // even though "b" is the primary key, we will fail to find it in the
-  // characteristic outputs and thus we will not synthesize the sort key.
-  // To solve this, we first check for the base column in the
-  // characteristic outputs. If we find it, great. But if we don't, we
-  // need to see if the base column is included in the SIMPLIFIED form
-  // of the characteristic outputs. If it is, then we need to change
-  // the sort key to include the valueId for the expression "b+1" instead
-  // of "b". This is because we cannot synthesize anything in the sort
-  // key that is not in the characteristic outputs, but if something
-  // is sorted by "b" then it is surely sorted by "b+1". We have
-  // coined the expression "complify" to represent this operation.
-  // ---------------------------------------------------------------------
-  sortOrderVEG.removeCoveredExprs(getGroupAttr()->getCharacteristicInputs());
-  sortOrderVEG.complifyAndRemoveUncoveredSuffix(
-                    getGroupAttr()->getCharacteristicOutputs()) ;
-
-  // ---------------------------------------------------------------------
-  // if this is a reverse scan, apply an inversion function to
-  // each of the ordering columns
-  // ---------------------------------------------------------------------
-  if (getReverseScan())
-    {
-      ItemExpr *inverseCol;
-
-      for (Lng32 i = 0; i < (Lng32)sortOrderVEG.entries(); i++)
-        {
-          ItemExpr *ix = sortOrderVEG[i].getItemExpr();
-
-          if (ix->getOperatorType() == ITM_INVERSE)
-            {
-              // remove the inverse operator, the reverse scan
-              // cancels it out
-              inverseCol = ix->child(0);
-            }
-          else
-            {
-              // add an inverse operator on top
-              inverseCol = new(CmpCommon::statementHeap())
-                InverseOrder(ix);
-              inverseCol->synthTypeAndValueId();
-            }
-          sortOrderVEG[i] = inverseCol->getValueId();
-        }
-    }
-
-  // ---------------------------------------------------------------------
-  // call a static helper method shared between scan and ins/upd/del
-  // ---------------------------------------------------------------------
-  return synthDP2PhysicalProperty(myContext,
-                                  sortOrderVEG,
-                                  getIndexDesc(),
-                                  getPartKey());
-
-} // DP2Delete::synthPhysicalProperty()
-
-// QSTUFF
-
-
-
-CostMethod*
-DP2Delete::costMethod() const
-{
-
-  static THREAD_P CostMethodDP2Delete *m = NULL;
-  if (m == NULL)
-    m = new (GetCliGlobals()->exCollHeap()) CostMethodDP2Delete();
-  return m;
-
-} // DP2Delete::costMethod()
-
-// -----------------------------------------------------------------------
-// member functions for class DP2Insert
-// -----------------------------------------------------------------------
-
-PhysicalProperty*
-DP2Insert::synthPhysicalProperty(const Context* myContext,
-				 const Lng32     planNumber)
-{
-  // synthesized order
-  ValueIdList sortOrderVEG = NULL;
-
-  sortOrderVEG =
-          getIndexDesc()->getOrderOfKeyValues();
-
-  // ---------------------------------------------------------------------
-  // call a static helper method shared between scan and ins/upd/del
-  // ---------------------------------------------------------------------
-  PhysicalProperty *pp = synthDP2PhysicalProperty(myContext,
-						  sortOrderVEG,
-						  getIndexDesc(),
-						  getPartKey());
-  
-  if (enableTransformToSTI())
-    {
-      NABoolean dataIsSorted = isDataSorted(this, myContext);
-      
-      pp->setInsertedDataIsSorted(dataIsSorted);
-    }
-
-  return pp;
-} // DP2Insert::synthPhysicalProperty()
-
-
 //<pb>
 //==============================================================================
 //  Synthesize physical properties for Explain operator's current plan
@@ -17297,40 +16963,6 @@ NABoolean RelExpr::isBigMemoryOperator(const Context* context, const Lng32)
   return FALSE;
 
 }
-
-PhysicalProperty * PhysicalInterpretAsRow::synthPhysicalProperty
-                                               (const Context* context,
-                                                const Lng32 planNumber)
-{
-   //----------------------------------------------------------
-   // Create a node map with a single, active, wild-card entry.
-   //----------------------------------------------------------
-   NodeMap* myNodeMap = new(CmpCommon::statementHeap())
-                           NodeMap(CmpCommon::statementHeap(),
-                                   1,
-                                   NodeMapEntry::ACTIVE);
-
-   //------------------------------------------------------------
-   // Synthesize a partitioning function with a single partition.
-   //------------------------------------------------------------
-   PartitioningFunction* myPartFunc = new(CmpCommon::statementHeap())
-                                SinglePartitionPartitioningFunction(myNodeMap);
-
-   // Note that INTERPRET_AS_ROW only executes in the master executor.
-   PhysicalProperty * sppForMe = new(CmpCommon::statementHeap())
-                                       PhysicalProperty(myPartFunc,
-                                                        EXECUTE_IN_MASTER,
-                                                        SOURCE_VIRTUAL_TABLE);
-   // remove anything that's not covered by the group attributes
-   sppForMe->enforceCoverageByGroupAttributes(getGroupAttr());
-   return sppForMe;
-}
-
-CostMethod * PhysicalInterpretAsRow::costMethod(void) const
-{
-   return TableValuedFunction::costMethod();
-}
-
 
 PhysicalProperty*
 ControlRunningQuery::synthPhysicalProperty(const Context* myContext,

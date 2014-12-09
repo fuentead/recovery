@@ -183,23 +183,6 @@ enum OperatorTypeEnum {
                         REL_DDL,
                         REL_DESCRIBE,
                         REL_EXE_UTIL,
-                        // for use with REL_ANY_DP2_INSUPDDEL
-                        REL_DP2_INSUPDDEL_FIRST,
-                        REL_DP2_INSERT_CURSOR,
-                        REL_DP2_INSERT_VSBB,
-                        REL_DP2_INSERT_SIDETREE,
-                        REL_DP2_DELETE_UNIQUE,
-                        REL_DP2_DELETE_CURSOR,
-                        REL_DP2_DELETE_SUBSET,
-#if 0
-// use subset delete instead, done as part of SQ SQL code cleanup effort
-                        REL_DP2_DELETE_RANGE,
-#endif // if 0
-                        REL_DP2_UPDATE_UNIQUE,
-                        REL_DP2_UPDATE_CURSOR,
-                        REL_DP2_UPDATE_SUBSET,
-                        REL_DP2_INSUPDDEL_LAST,
-                        REL_ANY_DP2_INSUPDDEL,  // wildcard (match() param)
 
                         REL_SORT_LOGICAL,
 
@@ -277,8 +260,6 @@ enum OperatorTypeEnum {
 
                         REL_CALLSP,   // CALL statement
                         REL_SP_PROXY, // Stored procedure result set proxy
-
-                        REL_INTERPRET_AS_ROW,
 
                         // Parallel extract consumer
                         REL_EXTRACT_SOURCE,
@@ -782,6 +763,7 @@ enum OperatorTypeEnum {
                         ITM_CONVERTTOHX = 2993,
                         ITM_HIVE_HASH = 2994,
                         ITM_HIVE_HASHCOMB = 2995,
+                        ITM_NAMED_TYPE_TO_ITEM = 2996,
 
                         ITM_LAST_ITEM_OP = 2999,
                         DML_LAST_DML_OP  = ITM_LAST_ITEM_OP,
@@ -1035,11 +1017,11 @@ enum OperatorTypeEnum {
                         ELM_KEY_VALUE_ELEM,
                         ELM_KEY_VALUE_LIST,
                         ELM_LIKE_CREATE_TABLE_ELEM,
-                        ELM_LIKE_OPT_WITH_CONSTRAINTS_ELEM,
+                        ELM_LIKE_OPT_WITHOUT_CONSTRAINTS_ELEM,
                         ELM_LIKE_OPT_WITH_HEADINGS_ELEM,
                         ELM_LIKE_OPT_WITH_HORIZONTAL_PARTITIONS_ELEM,
-                        //ELM_LIKE_OPT_WITH_VERTICAL_PARTITIONS_ELEM,
-                        ELM_LIKE_OPT_WITH_DIVISION_ELEM,
+                        ELM_LIKE_OPT_WITHOUT_SALT_ELEM,
+                        ELM_LIKE_OPT_WITHOUT_DIVISION_ELEM,
                         ELM_LOAD_OPT_D_SLACK_ELEM,
                         ELM_LOAD_OPT_I_SLACK_ELEM,
                         ELM_LOCATION_ELEM,

@@ -8240,6 +8240,26 @@ const SET(IndexDesc *) & Scan::deriveIndexOnlyIndexDesc()
 
 }
 
+/*******************************************************
+* Generates set of IndexDesc from the set of ScanIndexInfo
+********************************************************/
+const SET(IndexDesc *) & Scan::deriveIndexJoinIndexDesc()
+{
+    indexJoinScans_.clear();
+    CollIndex ijCount = possibleIndexJoins_.entries();
+    for(CollIndex i=0; i< ijCount; i++)
+    {
+      ScanIndexInfo *ixi = possibleIndexJoins_[i];
+      CollIndex uixCount = ixi->usableIndexes_.entries();
+      for(CollIndex j=0; j < uixCount; j++)
+      {
+        if (ixi->usableIndexes_[j]->getIndexDesc())
+          indexJoinScans_.insert(ixi->usableIndexes_[j]->getIndexDesc());
+      }
+    }
+    return indexJoinScans_;
+}
+
 void Scan::addIndexInfo()
 {
   // don't do this twice, return if already set
@@ -8269,6 +8289,26 @@ void Scan::addIndexInfo()
 //	 preds += resultSet;
 //	 doNotReplaceAnItemExpressionForLikePredicates(resultOld,preds,resultOld);
   }
+
+
+  if (CmpCommon::getDefault(MTD_GENERATE_CC_PREDS) == DF_ON)
+    {
+      // compute predicates on computed columns from regular predicates, based
+      // on the definition of the computed column. Example: 
+      // - regular predicate: a = 99
+      // - computed column definition: "_SALT_" = HASH2PARTFUNC(a,2)
+      // - computed predicate: "_SALT_" = HASH2PARTFUNC(99,2);
+      ValueIdSet clusteringKeyCols(
+           getTableDesc()->getClusteringIndex()->getClusteringKeyCols());
+      ValueIdSet selectionPreds(preds);
+
+      ScanKey::createComputedColumnPredicates(
+           selectionPreds,
+           clusteringKeyCols,
+           getGroupAttr()->getCharacteristicInputs(),
+           generatedCCPreds_);
+    }
+
   // a shortcut for tables with no indexes
   if ((ixlist.entries() == 1)||
       (tableDesc->isPartitionNameSpecified()))
@@ -8486,9 +8526,10 @@ void Scan::addIndexInfo()
 	    //Is any of the predicates covered by key columns of the
 	    //alternate index?
 	    ValueIdList userKeyColumns(idesc->getIndexKey());
-	    CollIndex numClusteringKey =
-	      idesc->getPrimaryTableDesc()->getClusteringIndex()
-	      ->getIndexKey().entries();
+            CollIndex numSecondaryIndexKey = 
+              idesc->getNAFileSet()->getCountOfUserSpecifiedIndexCols();
+	    CollIndex numClusteringKey = 
+              userKeyColumns.entries() - numSecondaryIndexKey;
 	    if(NOT idesc->isUniqueIndex())
 	    {
 	      CollIndex entry = userKeyColumns.entries() -1;
@@ -9287,11 +9328,14 @@ NABoolean Scan::reconcileGroupAttr(GroupAttributes *newGroupAttr)
 {
   addIndexInfo();
   const SET(IndexDesc *) & indexOnlyScans = deriveIndexOnlyIndexDesc();
+  const SET(IndexDesc *) & indexJoinScans = deriveIndexJoinIndexDesc();
   // we add the available indexes on this scan node to the
   // new GroupAttrs availableBtreeIndexes
   newGroupAttr->addToAvailableBtreeIndexes(indexOnlyScans);
+  newGroupAttr->addToAvailableBtreeIndexes(indexJoinScans);
   // This one is not actually necessary
   getGroupAttr()->addToAvailableBtreeIndexes(indexOnlyScans);
+  getGroupAttr()->addToAvailableBtreeIndexes(indexJoinScans);
   // Now as usual
   return RelExpr::reconcileGroupAttr(newGroupAttr);
 }
@@ -9304,7 +9348,8 @@ NABoolean Scan::reconcileGroupAttr(GroupAttributes *newGroupAttr)
 // --------------------------------------------------------------------
 NABoolean Scan::isMdamEnabled(const Context *context)
 {
-	NABoolean mdamIsEnabled = TRUE;
+  NABoolean mdamIsEnabled = TRUE;
+
     // -----------------------------------------------------------------------
     // Check the status of the enabled/disabled flag in
     // the defaults:
@@ -9397,6 +9442,7 @@ FileScan::FileScan(const CorrName& tableName,
 		   GroupAttributes * groupAttributesPtr,
 		   const ValueIdSet& selectionPredicates,
 		   const Disjuncts& disjuncts,
+                   const ValueIdSet& generatedCCPreds,
                    OperatorTypeEnum otype) :
      Scan (tableName, tableDescPtr, otype),
      indexDesc_(indexDescPtr),
@@ -9448,6 +9494,7 @@ FileScan::FileScan(const CorrName& tableName,
                                      indexDesc_
                                    );
     }
+  setComputedPredicates(generatedCCPreds);
 
 } // FileScan()
 
@@ -9936,12 +9983,14 @@ HbaseAccess::HbaseAccess(CorrName &corrName,
                          GroupAttributes * groupAttributesPtr,
                          const ValueIdSet& selectionPredicates,
                          const Disjuncts& disjuncts,
+                         const ValueIdSet& generatedCCPreds,
 			 OperatorTypeEnum otype,
                          CollHeap *oHeap)
   : FileScan(corrName, tableDesc, idx, 
              isReverseScan, baseCardinality,
              accessOptions, groupAttributesPtr,
              selectionPredicates, disjuncts,
+             generatedCCPreds,
              otype),
     listOfSearchKeys_(oHeap)
 {
@@ -10147,6 +10196,7 @@ HbaseAccessCoProcAggr::HbaseAccessCoProcAggr(CorrName &corrName,
 		isReverseScan, baseCardinality,
 		accessOptions, groupAttributesPtr,
 		selectionPredicates, disjuncts,
+                ValueIdSet(),
 		REL_HBASE_COPROC_AGGR),
     aggregateExpr_(aggregateExpr)
 {
@@ -10511,7 +10561,8 @@ DP2Scan::DP2Scan(const CorrName& tableName,
 		   accessOpts,
 		   groupAttributesPtr,
 		   selectionPredicates,
-		   disjuncts)
+		   disjuncts,
+                   ValueIdSet())
 {
 }
 
@@ -12219,17 +12270,6 @@ PlanPriority GenericUpdate::computeOperatorPriority
     ( QueryAnalysis::Instance() AND
       QueryAnalysis::Instance()->optimizeForFirstNRows());
 
-  //We need to give equal chance for unique_update
-  //when we are compaing it with an index based
-  //cursor_update plan when we are under interactive
-  //access mode. // Sathya
-  if(interactiveAccess AND
-     ((getOperatorType() == REL_DP2_UPDATE_UNIQUE) OR
-      (getOperatorType() == REL_DP2_DELETE_UNIQUE)))
-  {
-      result.incrementLevels(INTERACTIVE_ACCESS_PRIORITY,0);
-  }
-
   return result;
 }
 
@@ -12849,94 +12889,6 @@ RelExpr * InsertCursor::copyTopNode(RelExpr *derivedNode, CollHeap* outHeap)
 }
 
 // -----------------------------------------------------------------------
-// member functions for class DP2InsertCursor
-// -----------------------------------------------------------------------
-// constructor
-DP2Insert::DP2Insert(Insert *insertNode,
-		     CollHeap *oHeap)
-  : InsertCursor(insertNode->getTableName(),
-		 insertNode->getTableDesc(),
-		 REL_DP2_INSERT_CURSOR,
-		 NULL,
-		 oHeap,
-                 insertNode->getInsertType()),
-    projectMidRangeRows_(FALSE),
-    requireStrongRangeLock_(FALSE),
-    useDP2LocksToPreventHalloween_(FALSE),
-    ignoreDuplicateRows_(FALSE),
-    insertSelectQuery_(FALSE)
-{
-  setTolerateNonFatalError(insertNode->getTolerateNonFatalError());
-  setInsertSelectQuery(insertNode->isInsertSelectQuery());
-}
-
-DP2Insert::DP2Insert(CorrName &name,
-		     TableDesc *tableDesc,
-		     CollHeap *oHeap)
-  : InsertCursor(name,
-		 tableDesc,
-		 REL_DP2_INSERT_CURSOR,
-		 NULL,
-		 oHeap),
-    projectMidRangeRows_(FALSE),
-    requireStrongRangeLock_(FALSE),
-    useDP2LocksToPreventHalloween_(FALSE),
-    ignoreDuplicateRows_(FALSE),
-    insertSelectQuery_(FALSE)
-{
-}
-
-
-Int32 DP2Insert::getArity() const { return 0; }
-
-RelExpr * DP2Insert::copyTopNode(RelExpr *derivedNode, CollHeap* outHeap)
-{
-  DP2Insert *result;
-
-  if (derivedNode == NULL)
-    result = new (outHeap) DP2Insert(getTableName(),
-				  getTableDesc(),
-				  outHeap);
-  else
-    result = (DP2Insert *) derivedNode;
-
-  if (getProjectMidRangeRows())
-    result->setProjectMidRangeRows();
-  if (getRequireStrongRangeLock())
-    result->setRequireStrongRangeLock();
-  if (getUseDP2LocksToPreventHalloween())
-    result->setUseDP2LocksToPreventHalloween();
-  if(getIgnoreDuplicateRows())
-    result->setIgnoreDuplciateRows();
-  result->setInsertSelectQuery(isInsertSelectQuery());
-
-  return InsertCursor::copyTopNode(result, outHeap);
-}
-
-DP2Insert::DP2Insert(const DP2Insert & insertNode, OperatorTypeEnum op)
-      :InsertCursor(insertNode.getTableName(),
-     insertNode.getTableDesc(),
-     op,
-     NULL,
-     CmpCommon::statementHeap(),
-     Insert::SIMPLE_INSERT),
-     projectMidRangeRows_(insertNode.getProjectMidRangeRows()),
-     requireStrongRangeLock_(insertNode.getRequireStrongRangeLock()),
-    useDP2LocksToPreventHalloween_(FALSE),
-    ignoreDuplicateRows_(FALSE)
-{
-  setTolerateNonFatalError(insertNode.getTolerateNonFatalError());
-  setInsertSelectQuery(insertNode.isInsertSelectQuery());
-}
-
-DP2SideTreeInsert::DP2SideTreeInsert(DP2Insert *insertNode)
-  : DP2Insert( *insertNode, REL_DP2_INSERT_SIDETREE) {}
-
-
-DP2VSBBInsert::DP2VSBBInsert(DP2Insert *insertNode)
-   : DP2Insert( *insertNode, REL_DP2_INSERT_VSBB) {}
-
-// -----------------------------------------------------------------------
 // member functions for class HiveInsert
 // -----------------------------------------------------------------------
 const NAString HiveInsert::getText() const
@@ -13063,70 +13015,6 @@ RelExpr * UpdateCursor::copyTopNode(RelExpr *derivedNode, CollHeap* outHeap)
 }
 
 // -----------------------------------------------------------------------
-// member functions for class DP2Update
-// -----------------------------------------------------------------------
-Int32 DP2Update::getArity() const { return 0; }
-
-const NAString DP2Update::getText() const
-{
-  NAString text(CmpCommon::statementHeap());
-  switch (getOperatorType())
-  {
-    case REL_DP2_UPDATE_UNIQUE:
-      if (((DP2Update*)this)->isMerge())
-	text = "unique_merge ";
-      else
-	text = "unique_update ";
-      break;
-    case REL_DP2_UPDATE_CURSOR:
-      if (((DP2Update*)this)->isMerge())
-	text = "cursor_merge ";
-      else
-	text = "cursor_update ";
-      break;
-    case REL_DP2_UPDATE_SUBSET:
-      text = "subset_update ";
-      break;
-    default:
-      text = "unknown DP2Update?? ";
-      break;
-  }
-
-  return (text + getUpdTableNameText());
-}
-
-void DP2Update::getPotentialOutputValues(ValueIdSet & outputValues) const
-{
-  outputValues.clear();
-  //
-  // Assign the set of columns that belong to the index to be updated
-  // as the potential output values.  Although not truly produced as
-  // output, these values are available for evaluation.
-  //
-  outputValues.insertList (getIndexDesc()->getIndexColumns());
-
-  // Also add the set of columns from the scan index descriptor, if
-  // this is not a cursor update.
-  if (getOperatorType() != REL_DP2_UPDATE_CURSOR)
-    outputValues.insertList(getScanIndexDesc()->getIndexColumns());
-
-  // ++MV -
-  // Add the current epoch function to to outputs values
-  ValueId   epochValueId;
-  if(TRUE == getOutputFunctionsForMV(epochValueId, ITM_CURRENTEPOCH))
-  {
-    outputValues += epochValueId;
-  }
-  ValueId timestampId;
-  if(TRUE == getOutputFunctionsForMV(timestampId, ITM_JULIANTIMESTAMP))
-  {
-    outputValues += timestampId;
-  }
-  // --MV -
-
-} // DP2Update::getPotentialOutputValues()
-
-// -----------------------------------------------------------------------
 // member functions for class DeleteCursor
 // -----------------------------------------------------------------------
 
@@ -13158,12 +13046,6 @@ RelExpr * DeleteCursor::copyTopNode(RelExpr *derivedNode, CollHeap* outHeap)
 
   return Delete::copyTopNode(result, outHeap);
 }
-
-// -----------------------------------------------------------------------
-// member functions for class DP2Delete
-// -----------------------------------------------------------------------
-Int32 DP2Delete::getArity() const { return 0; }
-
 
 
 /////////////////////////////////////////////////////////////////////
@@ -13209,71 +13091,6 @@ RelExpr::unparse(NAString &result,
       result += ")";
     }
 }
-
-const NAString DP2Delete::getText() const
-{
-  NAString text(CmpCommon::statementHeap());
-  switch (getOperatorType())
-  {
-    case REL_DP2_DELETE_UNIQUE:
-      if (((DP2Delete*)this)->isMerge())
-	text = "unique_merge ";
-      else
-	text = "unique_delete ";
-      break;
-    case REL_DP2_DELETE_CURSOR:
-      if (((DP2Delete*)this)->isMerge())
-	text = "cursor_merge ";
-      else
-	text = "cursor_delete ";
-      break;
-#if 0
-// unused feature, done as part of SQ SQL code cleanup effort
-    case REL_DP2_DELETE_RANGE:
-      text = "range_delete ";
-      break;
-#endif // if 0
-    case REL_DP2_DELETE_SUBSET:
-      text = "subset_delete ";
-      break;
-    default:
-      text = "unknown DP2Delete?? ";
-      break;
-  }
-
-  return (text + getUpdTableNameText());
-}
-
-void DP2Delete::getPotentialOutputValues(ValueIdSet & outputValues) const
-{
-  outputValues.clear();
-  //
-  // Assign the set of columns that belong to the index to be deleted from
-  // as the potential output values.  Although not truly produced as
-  // output, these values are available for evaluation.
-  //
-  outputValues.insertList (getIndexDesc()->getIndexColumns());
-
-  // Also add the set of columns from the scan index descriptor, if
-  // this is not a cursor delete.
-  if (getOperatorType() != REL_DP2_DELETE_CURSOR)
-    outputValues.insertList(getScanIndexDesc()->getIndexColumns());
-
-  // ++MV -
-  // Add the current epoch function to to outputs values
-  ValueId   epochValueId;
-  if(TRUE == getOutputFunctionsForMV(epochValueId, ITM_CURRENTEPOCH))
-  {
-    outputValues += epochValueId;
-  }
-  ValueId timestampId;
-  if(TRUE == getOutputFunctionsForMV(timestampId, ITM_JULIANTIMESTAMP))
-  {
-    outputValues += timestampId;
-  }
-  // --MV -
-
-} // DP2Delete::getPotentialOutputValues()
 
 // -----------------------------------------------------------------------
 // methods for class Transpose

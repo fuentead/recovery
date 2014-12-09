@@ -326,7 +326,7 @@ static NABoolean checkMDAMadditionalRestriction(const ColumnOrderList& keyPredsB
      checkLeadingDivColumns = FALSE;
 
    NABoolean isLeadingDivisionColumn = FALSE;
-   NABoolean isLeadingSaltedColumn = FALSE;
+   NABoolean isLeadingSaltColumn = FALSE;
 
    for (index = 0; index < lastColumnPosition; index++)
    {
@@ -338,7 +338,7 @@ static NABoolean checkMDAMadditionalRestriction(const ColumnOrderList& keyPredsB
        typeOfRange= KeyColumns::KeyColumn::EMPTY;
 
      isLeadingDivisionColumn = FALSE;
-     isLeadingSaltedColumn = FALSE;
+     isLeadingSaltColumn = FALSE;
 
      if ( checkLeadingDivColumns )
      {
@@ -347,8 +347,8 @@ static NABoolean checkMDAMadditionalRestriction(const ColumnOrderList& keyPredsB
             keyPredsByCol.getKeyColumnId(index).isDivisioningColumn();
 
        // Check if the key column is a leading salted column
-       isLeadingSaltedColumn =
-             keyPredsByCol.getKeyColumnId(index).isSaltedColumn();
+       isLeadingSaltColumn =
+             keyPredsByCol.getKeyColumnId(index).isSaltColumn();
      }
 
      if (typeOfRange == KeyColumns::KeyColumn::EMPTY) {
@@ -357,7 +357,7 @@ static NABoolean checkMDAMadditionalRestriction(const ColumnOrderList& keyPredsB
         // and the current key column is not divisioning, increase the
         // the non-key-predicate columns.
         if ( checkLeadingDivColumns == FALSE ||
-             (!isLeadingDivisionColumn && !isLeadingSaltedColumn)
+             (!isLeadingDivisionColumn && !isLeadingSaltColumn)
            )
            noOfmissingKeyColumns++;
 
@@ -3010,15 +3010,40 @@ CollIndex ScanOptimizer::getEstNumActivePartitionsAtRuntime() const
 	}
     }
   }
-  else if ( getIndexDesc()->getPrimaryTableDesc()->getNATable()->isHbaseTable() &&
-            (CmpCommon::getDefault(NCM_USE_HBASE_REGIONS) == DF_ON) )
-  {
-    PartitioningFunction * physicalPartFunc = getIndexDesc()->getPartitioningFunction();
+
+  return actParts;
+}
+
+// look at physical partition function of indexDesc to determine active partitions(AP)
+// for salted table. Adjust AP count if partitionkey predicate is a constant
+CollIndex ScanOptimizer::getEstNumActivePartitionsAtRuntimeForHbaseRegions() const
+{
+  CollIndex actParts;
+  PartitioningFunction *pf =
+    getContext().getPlan()->getPhysicalProperty()->getPartitioningFunction();
+
+  DCMPASSERT(pf != NULL);
+
+    // get estimated active partition count
+  CollIndex estActParts = ((NodeMap *)(pf->getNodeMap()))->getEstNumActivePartitionsAtRuntime();
+
+  // if partition key predicate is constant, then estimated active partition count will
+  // be set to one by computeDP2CostDataThatDependsOnSPP() method. 
+  // Use this value for costing REL_HBASE_ACCESS operator
+  if (estActParts == 1 AND (CmpCommon::getDefault(NCM_HBASE_COSTING) == DF_ON))
+    return estActParts;
+  
+  // return the #region servers via the partition function describing the physical Hbase table
+  PartitioningFunction * physicalPartFunc = getIndexDesc()->getPartitioningFunction();
   if (physicalPartFunc == NULL) // single region
-   return 1;
+   actParts =  1;
   else // multi-region case
-    return ((NodeMap *)(physicalPartFunc->getNodeMap()))->getNumActivePartitions();
-  }
+    actParts =  ((NodeMap *)(physicalPartFunc->getNodeMap()))->getNumActivePartitions();
+
+  // if partition key predicate is constant, then estimated active partition count will 
+  // be one, use that value
+  if (estActParts == 1 AND (CmpCommon::getDefault(NCM_HBASE_COSTING) == DF_ON))
+    actParts = estActParts;
 
   return actParts;
 }
@@ -3325,6 +3350,12 @@ ScanOptimizer::isMdamEnabled() const
     }
 
   const IndexDesc* idesc = getIndexDesc();
+
+  NABoolean isHbaseNativeTable = 
+    idesc->getPrimaryTableDesc()->getNATable()->isHbaseCellTable() ||
+    idesc->getPrimaryTableDesc()->getNATable()->isHbaseRowTable();
+  if (isHbaseNativeTable)
+    mdamIsEnabled = FALSE;
 
   // If the table to be optimized is the base table and has divisioning
   // columns defined on it, no more check is necessary.

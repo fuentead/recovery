@@ -3642,6 +3642,9 @@ enum DefaultConstants
   TRAF_LOAD_FORCE_CIF,
   TRAF_ENABLE_ORC_FORMAT,
 
+ // max size in bytes of a char or varchar column in a trafodion table.
+  TRAF_MAX_CHARACTER_COL_LENGTH,
+
   // The threshold on the number of rows scanned in an index join scan. 
   // If the estimated value is below the threshold, the index will be 
   // subjected to the elimination heuristics.
@@ -3654,6 +3657,11 @@ enum DefaultConstants
   NSK_DBG_QUERY_PREFIX,
 
   EXPLAIN_IN_RMS,
+  NCM_HBASE_COSTING,
+  NCM_IND_JOIN_SELECTIVITY,
+  NCM_IND_SCAN_SELECTIVITY,
+  NCM_OLTP_ET_THRESHOLD,
+  NCM_SKEW_COST_ADJ_FOR_PROBES, 
   // This enum constant must be the LAST one in the list; it's a count,
   // not an Attribute (it's not IN DefaultDefaults; it's the SIZE of it)!
   __NUM_DEFAULT_ATTRIBUTES

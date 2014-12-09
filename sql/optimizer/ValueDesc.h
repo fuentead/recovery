@@ -185,9 +185,9 @@ public:
   NABoolean isDivisioningColumn() const;
 
   // return TRUE iff I am a ValueId associated with an Index Column, or
-  // a base column that is a salted(computed) column. If I am an index column,
+  // a base column that is a salt (computed) column. If I am an index column,
   // get the associated base column.
-  NABoolean isSaltedColumn() const;
+  NABoolean isSaltColumn() const;
 
   // ---------------------------------------------------------------------
   // change the ValueId's type to the given type
@@ -1049,6 +1049,12 @@ public:
   // --------------------------------------------------------------------
   void weedOutUnreferenced(ValueIdSet & other);
 
+  // --------------------------------------------------------------------
+  // weedOutNonEquiPreds()
+  //
+  // Remove everything except equi-predicates (VEGPredicate and ITM_EQUAL)
+  // --------------------------------------------------------------------
+  void weedOutNonEquiPreds();
 
   // --------------------------------------------------------------------
   // normalizeNode()

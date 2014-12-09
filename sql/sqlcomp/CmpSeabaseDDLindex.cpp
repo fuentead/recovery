@@ -61,6 +61,8 @@
 
 #include "NumericType.h"
 
+#include "PrivMgrCommands.h"
+
 short 
 CmpSeabaseDDL::createIndexColAndKeyInfoArrays(
      ElemDDLColRefArray &indexColRefArray,
@@ -139,7 +141,7 @@ CmpSeabaseDDL::createIndexColAndKeyInfoArrays(
 
      colInfoArray[i].colNumber = i; 
 
-     strcpy(colInfoArray[i].columnClass, COM_USER_COLUMN_LIT);
+     colInfoArray[i].columnClass = COM_USER_COLUMN;
 
      const NAType * naType = tableCol->getType();
 
@@ -279,7 +281,7 @@ CmpSeabaseDDL::createIndexColAndKeyInfoArrays(
       colInfoArray[i].colName = col_name;
 
       colInfoArray[i].colNumber = i; 
-      strcpy(colInfoArray[i].columnClass, COM_USER_COLUMN_LIT);
+      colInfoArray[i].columnClass = COM_USER_COLUMN;
 
       selColList.insert(keyCol->getColName());
 
@@ -528,9 +530,10 @@ void CmpSeabaseDDL::createSeabaseIndex(
     }
 
   // Verify that current user has authority to create an index
-  // The user must own the base table or have the ALTER_TABLE privilege
-  if (!isDDLOperationAuthorized(SQLOperation::ALTER_TABLE,
-                                naTable->getOwner()))
+  // The user must own the base table, have the base table ALTER_TABLE 
+  // privilege or have the CREATE_INDEX privilege
+  if ((!isDDLOperationAuthorized(SQLOperation::CREATE_INDEX, naTable->getOwner())) &&
+      (!isDDLOperationAuthorized(SQLOperation::ALTER_TABLE, naTable->getOwner())))
   {
      *CmpCommon::diags() << DgSqlCode(-CAT_NOT_AUTHORIZED);
 
@@ -653,12 +656,14 @@ void CmpSeabaseDDL::createSeabaseIndex(
   const NAFileSet * nafs = naTable->getClusteringIndex();
   const NAColumnArray &baseTableKeyArr = nafs->getIndexKeyColumns();
   Int32 numSplits = 0;
+  CollIndex numPrefixColumns = 0;
 
   if (createIndexNode->getSaltOptions() && 
       createIndexNode->getSaltOptions()->getLikeTable())
   {
     if (createIndexNode->isUniqueSpecified())
     {
+      // TBD: allow unique indexes on a superset of the SALT BY columns
       *CmpCommon::diags() << DgSqlCode(-CAT_INVALID_SALTED_UNIQUE_IDX)
                            << DgString0(extIndexName);
        deallocEHI(ehi);
@@ -669,25 +674,68 @@ void CmpSeabaseDDL::createSeabaseIndex(
     if (naTable->hasSaltedColumn())
     {
       createIndexNode->getSaltOptions()->setNumPartns(naTable->numSaltPartns());
-      NAString saltCol = "_SALT_";
+      NAString saltColName;
+      for (CollIndex c=0; c<baseTableKeyArr.entries(); c++)
+        if (baseTableKeyArr[c]->isSaltColumn())
+          {
+            saltColName = baseTableKeyArr[c]->getColName();
+            break;
+          }
+
       ElemDDLColRef * saltColRef = new (STMTHEAP) ElemDDLColRef(
-                                        saltCol /*column_name*/,
+                                        saltColName /*column_name*/,
                                         COM_UNKNOWN_ORDER /*default val*/,
                                         STMTHEAP);
       //SALT column will be the first column in the index
-      indexColRefArray.insertAt((CollIndex)0, saltColRef);
+      indexColRefArray.insertAt(numPrefixColumns, saltColRef);
+      numPrefixColumns++;
       numSplits = naTable->numSaltPartns() - 1;
     }
     else
     {
-       *CmpCommon::diags() << DgSqlCode(-CAT_INVALID_SALT_LIKE_CLAUSE)
+       // give a warning that table is not salted
+       *CmpCommon::diags() << DgSqlCode(CAT_INVALID_SALT_LIKE_CLAUSE)
                            << DgString0(extTableName)
                            << DgString1(extIndexName);
-       deallocEHI(ehi);
-       processReturn();
-       return;
     }
   }
+
+  if (createIndexNode->getDivisionType() == ElemDDLDivisionClause::DIVISION_LIKE_TABLE)
+    {
+      if (createIndexNode->isUniqueSpecified())
+        {
+          // TBD: Allow unique indexes on a superset of the division by columns
+          *CmpCommon::diags() << DgSqlCode(-1402)
+                              << DgTableName(extIndexName)
+                              << DgString0(extTableName);
+          deallocEHI(ehi);
+          processReturn();
+          return;
+        }
+
+      int numDivisioningColumns = 0;
+
+      for (CollIndex c=0; c<baseTableKeyArr.entries(); c++)
+        if (baseTableKeyArr[c]->isDivisioningColumn())
+          {
+            ElemDDLColRef * divColRef = new (STMTHEAP) ElemDDLColRef(
+               baseTableKeyArr[c]->getColName(),
+               COM_UNKNOWN_ORDER /*default val*/,
+               STMTHEAP);
+          // divisioning columns go after the salt but before any user columns
+          indexColRefArray.insertAt(numPrefixColumns, divColRef);
+          numPrefixColumns++;
+          numDivisioningColumns++;
+        }
+
+      if (numDivisioningColumns == 0)
+        {
+          // give a warning that table is not divisioned
+          *CmpCommon::diags() << DgSqlCode(4248)
+                              << DgString0(extTableName)
+                              << DgString1(extIndexName);
+        }
+    }
 
   Lng32 keyColCount = 0;
   Lng32 nonKeyColCount = 0;
@@ -759,17 +807,15 @@ void CmpSeabaseDDL::createSeabaseIndex(
   tableInfo->hbaseCreateOptions = NULL;
   tableInfo->numSaltPartns = (numSplits > 0 ? numSplits+1 : 0);
 
-  ComTdbVirtTableIndexInfo * iii = new(STMTHEAP) ComTdbVirtTableIndexInfo();
-
-  ComTdbVirtTableIndexInfo ii;
-  ii.baseTableName = (char*)extTableName.data();
-  ii.indexName = (char*)extIndexName.data();
-  ii.keytag = 1;
-  ii.isUnique = createIndexNode->isUniqueSpecified() ? 1 : 0;
-  ii.isExplicit = 1;
-  ii.keyColCount = keyColCount;
-  ii.nonKeyColCount = nonKeyColCount;
-  ii.keyInfoArray = NULL; //keyInfoArray;
+  ComTdbVirtTableIndexInfo * ii = new(STMTHEAP) ComTdbVirtTableIndexInfo();
+  ii->baseTableName = (char*)extTableName.data();
+  ii->indexName = (char*)extIndexName.data();
+  ii->keytag = 1;
+  ii->isUnique = createIndexNode->isUniqueSpecified() ? 1 : 0;
+  ii->isExplicit = 1;
+  ii->keyColCount = keyColCount;
+  ii->nonKeyColCount = nonKeyColCount;
+  ii->keyInfoArray = NULL; //keyInfoArray;
 
   NAList<HbaseCreateOption*> hbaseCreateOptions;
   NAString hco;
@@ -801,7 +847,7 @@ void CmpSeabaseDDL::createSeabaseIndex(
 			 totalColCount,
 			 keyInfoArray,
 			 1, // numIndex
-                         &ii,
+                         ii,
                          tableInfo->objOwnerID,
                          objUID))
     {
@@ -1089,15 +1135,43 @@ void CmpSeabaseDDL::populateSeabaseIndex(
     }
 
   // Verify that current user has authority to populate the index
-  if (!isDDLOperationAuthorized(SQLOperation::ALTER_TABLE,
-                                naTable->getOwner()))
-  {
-     *CmpCommon::diags() << DgSqlCode(-CAT_NOT_AUTHORIZED);
+  // User must be DB__ROOT or have privileges
+  PrivMgrUserPrivs *privs = naTable->getPrivInfo();
+  if (isAuthorizationEnabled() && privs == NULL)
+    {
+      *CmpCommon::diags() << DgSqlCode(-CAT_UNABLE_TO_RETRIEVE_PRIVS);
+  
+       processReturn();
 
-     processReturn();
+       return;
+    }
 
-     return;
-  }
+  // Requester must have SELECT and INSERT privileges
+  if (!ComUser::isRootUserID() && isAuthorizationEnabled())
+    {
+      NABoolean hasPriv = TRUE;
+      if ( !privs->hasSelectPriv() )
+        {
+           hasPriv == FALSE;
+           *CmpCommon::diags() << DgSqlCode( -4481 )
+                               << DgString0( "SELECT" )
+                               << DgString1( extTableName.data());
+        }
+
+      if ( !privs->hasInsertPriv() )
+        {   
+           hasPriv == FALSE;
+           *CmpCommon::diags() << DgSqlCode( -4481 )
+                               << DgString0( "INSERT" )
+                               << DgString1( extTableName.data());
+        }   
+      if (hasPriv == FALSE)
+      {
+         processReturn();
+
+         return;
+      }
+    }
 
   const NAFileSetList &indexList = naTable->getIndexList();
   for (Int32 i = 0; i < indexList.entries(); i++)
@@ -1356,7 +1430,8 @@ void CmpSeabaseDDL::dropSeabaseIndex(
     }
   
   // Verify that current user has authority to drop the index
-  if (!isDDLOperationAuthorized(SQLOperation::ALTER_TABLE, btObjOwner))
+  if ((!isDDLOperationAuthorized(SQLOperation::DROP_INDEX, btObjOwner)) &&
+      (!isDDLOperationAuthorized(SQLOperation::ALTER_TABLE, btObjOwner)))
   {
      *CmpCommon::diags() << DgSqlCode(-CAT_NOT_AUTHORIZED);
 
@@ -1565,7 +1640,8 @@ void CmpSeabaseDDL::alterSeabaseTableDisableOrEnableIndex(
     }
 
   // Verify that current user has authority to drop the index
-  if (!isDDLOperationAuthorized(SQLOperation::ALTER_TABLE, btObjOwner))
+  if ((!isDDLOperationAuthorized(SQLOperation::DROP_INDEX, btObjOwner)) &&
+      (!isDDLOperationAuthorized(SQLOperation::ALTER_TABLE, btObjOwner)))
   {
      *CmpCommon::diags() << DgSqlCode(-CAT_NOT_AUTHORIZED);
 
