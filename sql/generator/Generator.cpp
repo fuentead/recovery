@@ -293,7 +293,6 @@ void Generator::initTdbFields(ComTdb *tdb)
   if(largeQueueSize_ > 0 &&
      tdb->getInitialQueueSizeDown() < largeQueueSize_ &&
      tdb->getNodeType() != ComTdb::ex_ROOT &&
-     tdb->getNodeType() != ComTdb::ex_EID_ROOT &&
      (ActiveSchemaDB()->getDefaults().getToken(USE_LARGE_QUEUES) == DF_ON)) {
 
     tdb->setQueueResizeParams(largeQueueSize_,
@@ -896,9 +895,9 @@ desc_struct* Generator::createColDescs(
 
       col_desc->body.columns_desc.colclass = 'U';
       col_desc->body.columns_desc.addedColumn = 0;
-      if (strcmp(info->columnClass, COM_SYSTEM_COLUMN_LIT) == 0)
+      if (info->columnClass == COM_SYSTEM_COLUMN)
 	col_desc->body.columns_desc.colclass = 'S';
-      else if (strcmp(info->columnClass, COM_ADDED_USER_COLUMN_LIT) == 0)
+      else if (info->columnClass == COM_ADDED_USER_COLUMN)
 	{
 	  col_desc->body.columns_desc.colclass = 'A';
 	  col_desc->body.columns_desc.addedColumn = 1;
@@ -924,6 +923,7 @@ desc_struct* Generator::createColDescs(
       col_desc->body.columns_desc.paramDirection =
            CmGetComDirectionAsComParamDirection(info->paramDirection);
       col_desc->body.columns_desc.isOptional = info->isOptional;
+      col_desc->body.columns_desc.colFlags = info->colFlags;
 
       if (!first_col_desc)
 	first_col_desc = col_desc;
@@ -1131,7 +1131,12 @@ desc_struct * Generator::createVirtualTableDesc(
     {
       *(Int64*)&table_desc->body.table_desc.createtime = 0;
       *(Int64*)&table_desc->body.table_desc.redeftime = 0;
-      *(Int64*)&table_desc->body.table_desc.objectUID = 0;
+
+      ComUID comUID;
+      comUID.make_UID();
+      Int64 objUID = comUID.get_value();
+
+      *(Int64*)&table_desc->body.table_desc.objectUID = objUID;
     }
 
   table_desc->body.table_desc.issystemtablecode = 1;

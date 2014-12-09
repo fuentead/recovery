@@ -2823,6 +2823,430 @@ static NAString makeColumnName(const NATable *table,
 }
 
 // -----------------------------------------------------------------------
+// Method for creating NAType from desc_struct.
+// -----------------------------------------------------------------------
+NABoolean createNAType(columns_desc_struct *column_desc	/*IN*/,
+		       const NATable *table  		/*IN*/,
+		       NAType *&type       		/*OUT*/,
+		       NAMemory *heap			/*IN*/,
+		       Lng32 * errorCode
+		       )
+{
+  //
+  // Compute the NAType for this column
+  //
+  #define REC_INTERVAL REC_MIN_INTERVAL
+
+  DataType datatype = column_desc->datatype;
+  if (REC_MIN_INTERVAL <= datatype && datatype <= REC_MAX_INTERVAL)
+    datatype = REC_INTERVAL;
+
+  Lng32 charCount = column_desc->length;
+
+  if ( DFS2REC::isAnyCharacter(column_desc->datatype) )
+  {
+     if ( CharInfo::isCharSetSupported(column_desc->character_set) == FALSE ) {
+       if (!errorCode)
+       {
+         *CmpCommon::diags() << DgSqlCode(-4082)
+	       << DgTableName(makeTableName(table, column_desc));
+       }
+       else
+       {
+         *errorCode = 4082;
+       }
+       return TRUE; // error
+     }
+
+     if ( CharInfo::is_NCHAR_MP(column_desc->character_set) )
+        charCount /= SQL_DBCHAR_SIZE;
+  }
+
+  switch (datatype)
+    {
+
+    case REC_BPINT_UNSIGNED :
+      type = new (heap)
+      SQLBPInt(column_desc->precision, column_desc->null_flag, FALSE, heap);
+      break;
+
+    case REC_BIN16_SIGNED:
+      if (column_desc->precision > 0)
+	type = new (heap)
+	SQLNumeric(column_desc->length,
+		   column_desc->precision,
+		   column_desc->scale,
+		   TRUE,
+		   column_desc->null_flag,
+                   heap
+		   );
+      else
+	type = new (heap)
+	SQLSmall(TRUE,
+		 column_desc->null_flag,
+                 heap
+		 );
+      break;
+    case REC_BIN16_UNSIGNED:
+      if (column_desc->precision > 0)
+	type = new (heap)
+	SQLNumeric(column_desc->length,
+		   column_desc->precision,
+		   column_desc->scale,
+		   FALSE,
+		   column_desc->null_flag,
+                   heap
+		   );
+      else
+	type = new (heap)
+	SQLSmall(FALSE,
+		 column_desc->null_flag,
+                 heap
+		 );
+      break;
+    case REC_BIN32_SIGNED:
+      if (column_desc->precision > 0)
+	type = new (heap)
+	SQLNumeric(column_desc->length,
+		   column_desc->precision,
+		   column_desc->scale,
+		   TRUE,
+		   column_desc->null_flag,
+                   heap
+		   );
+      else
+	type = new (heap)
+	SQLInt(TRUE,
+	       column_desc->null_flag,
+               heap
+	       );
+      break;
+    case REC_BIN32_UNSIGNED:
+      if (column_desc->precision > 0)
+	type = new (heap)
+	SQLNumeric(column_desc->length,
+		   column_desc->precision,
+		   column_desc->scale,
+		   FALSE,
+		   column_desc->null_flag,
+                   heap
+		   );
+      else
+	type = new (heap)
+	SQLInt(FALSE,
+	       column_desc->null_flag,
+               heap
+	       );
+      break;
+    case REC_BIN64_SIGNED:
+      if (column_desc->precision > 0)
+	type = new (heap)
+	SQLNumeric(column_desc->length,
+		   column_desc->precision,
+		   column_desc->scale,
+		   TRUE,
+		   column_desc->null_flag,
+                   heap
+		   );
+      else
+	type = new (heap)
+	SQLLargeInt(TRUE,
+		    column_desc->null_flag,
+                    heap
+		    );
+      break;
+    case REC_DECIMAL_UNSIGNED:
+      type = new (heap)
+	SQLDecimal(column_desc->length,
+		   column_desc->scale,
+		   FALSE,
+		   column_desc->null_flag,
+                   heap
+		   );
+      break;
+    case REC_DECIMAL_LSE:
+      type = new (heap)
+	SQLDecimal(column_desc->length,
+		   column_desc->scale,
+		   TRUE,
+		   column_desc->null_flag,
+                   heap
+		   );
+      break;
+    case REC_NUM_BIG_UNSIGNED:
+      type = new (heap)
+	SQLBigNum(column_desc->precision,
+		  column_desc->scale,
+		  TRUE, // is a real bignum
+		  FALSE,
+		  column_desc->null_flag,
+		  heap
+		  );
+      break;
+    case REC_NUM_BIG_SIGNED:
+      type = new (heap)
+	SQLBigNum(column_desc->precision,
+		  column_desc->scale,
+		  TRUE, // is a real bignum
+		  TRUE,
+		  column_desc->null_flag,
+		  heap
+		  );
+      break;
+
+    case REC_TDM_FLOAT32:
+      type = new (heap)
+	SQLRealTdm(column_desc->null_flag, heap, column_desc->precision);
+      break;
+
+    case REC_TDM_FLOAT64:
+      type = new (heap)
+	SQLDoublePrecisionTdm(column_desc->null_flag, heap, column_desc->precision);
+      break;
+
+    case REC_FLOAT32:
+      type = new (heap)
+	SQLReal(column_desc->null_flag, heap, column_desc->precision);
+      break;
+
+    case REC_FLOAT64:
+      type = new (heap)
+	SQLDoublePrecision(column_desc->null_flag, heap, column_desc->precision);
+      break;
+
+    case REC_BYTE_F_DOUBLE:
+      charCount /= SQL_DBCHAR_SIZE;	    // divide the storage length by 2
+      type = new (heap)
+	SQLChar(charCount,
+		column_desc->null_flag,
+		column_desc->upshift,
+		column_desc->caseinsensitive,
+		FALSE,
+		column_desc->character_set,
+		column_desc->collation_sequence,
+		CharInfo::IMPLICIT
+		);
+      break;
+
+    case REC_BYTE_F_ASCII:
+      if (column_desc->character_set == CharInfo::UTF8 ||
+          (column_desc->character_set == CharInfo::SJIS &&
+           column_desc->encoding_charset == CharInfo::SJIS))
+      {
+        Lng32 maxBytesPerChar = CharInfo::maxBytesPerChar(column_desc->character_set);
+        Lng32 sizeInChars = charCount ;  // Applies when CharLenUnit == BYTES
+        if ( column_desc->precision > 0 )
+           sizeInChars = column_desc->precision;
+        type = new (heap)
+	SQLChar(CharLenInfo(sizeInChars, charCount/*in_bytes*/),
+		column_desc->null_flag,
+		column_desc->upshift,
+		column_desc->caseinsensitive,
+		FALSE, // varLenFlag
+		column_desc->character_set,
+		column_desc->collation_sequence,
+		CharInfo::IMPLICIT, // Coercibility
+		column_desc->encoding_charset
+		);
+      }
+      else // keep the old behavior
+      type = new (heap)
+	SQLChar(charCount,
+		column_desc->null_flag,
+		column_desc->upshift,
+		column_desc->caseinsensitive,
+		FALSE,
+		column_desc->character_set,
+		column_desc->collation_sequence,
+		CharInfo::IMPLICIT
+		);
+      break;
+
+    case REC_BYTE_V_DOUBLE:
+      charCount /= SQL_DBCHAR_SIZE;	    // divide the storage length by 2
+      // fall thru
+    case REC_BYTE_V_ASCII:
+      if (column_desc->character_set == CharInfo::SJIS ||
+          column_desc->character_set == CharInfo::UTF8)
+      {
+        Lng32 maxBytesPerChar = CharInfo::maxBytesPerChar(column_desc->character_set);
+        Lng32 sizeInChars = charCount ;  // Applies when CharLenUnit == BYTES
+        if ( column_desc->precision > 0 )
+           sizeInChars = column_desc->precision;
+        type = new (heap)
+	SQLVarChar(CharLenInfo(sizeInChars, charCount/*in_bytes*/),
+		   column_desc->null_flag,
+		   column_desc->upshift,
+		   column_desc->caseinsensitive,
+		   column_desc->character_set,
+		   column_desc->collation_sequence,
+		   CharInfo::IMPLICIT, // Coercibility
+		   column_desc->encoding_charset
+		   );
+      }
+      else // keep the old behavior
+      type = new (heap)
+	SQLVarChar(charCount,
+		   column_desc->null_flag,
+		   column_desc->upshift,
+		   column_desc->caseinsensitive,
+		   column_desc->character_set,
+		   column_desc->collation_sequence,
+		   CharInfo::IMPLICIT
+		   );
+      break;
+
+    case REC_BYTE_V_ASCII_LONG:
+      type = new (heap)
+	SQLLongVarChar(charCount,
+		       FALSE,
+		       column_desc->null_flag,
+		       column_desc->upshift,
+		       column_desc->caseinsensitive,
+		       column_desc->character_set,
+		       column_desc->collation_sequence,
+		       CharInfo::IMPLICIT
+		      );
+      break;
+    case REC_DATETIME:
+      type = DatetimeType::constructSubtype(
+					    column_desc->null_flag,
+					    column_desc->datetimestart,
+					    column_desc->datetimeend,
+					    column_desc->datetimefractprec,
+					    heap
+					    );
+      CMPASSERT(type);
+      if (!type->isSupportedType())
+	{
+         column_desc->defaultClass = COM_NO_DEFAULT;           // can't set a default for these, either.
+	  // 4030 Column is an unsupported combination of datetime fields
+     if (!errorCode)
+     {
+         *CmpCommon::diags() << DgSqlCode(4030)
+	    << DgColumnName(makeColumnName(table, column_desc))
+	    << DgInt0(column_desc->datetimestart)
+	    << DgInt1(column_desc->datetimeend)
+	    << DgInt2(column_desc->datetimefractprec);
+     }
+     else
+     {
+       *errorCode = 4030;
+     }
+	}
+      break;
+    case REC_INTERVAL:
+      type = new (heap)
+         SQLInterval(column_desc->null_flag,
+		    column_desc->datetimestart,
+		    column_desc->intervalleadingprec,
+		    column_desc->datetimeend,
+		    column_desc->datetimefractprec,
+                    heap
+		    );
+      CMPASSERT(type);
+      if (! ((SQLInterval *)type)->checkValid(CmpCommon::diags()))
+         return TRUE;                                            // error
+      if (!type->isSupportedType())
+      {
+        column_desc->defaultClass = COM_NO_DEFAULT;           // can't set a default for these, either.
+        if (!errorCode)
+          *CmpCommon::diags() << DgSqlCode(3044) << DgString0(column_desc->colname);
+        else
+          *errorCode = 3044;
+
+      }
+      break;
+
+    case REC_BLOB :
+      type = new (heap)
+	SQLBlob(column_desc->precision,Lob_Invalid_Storage,
+		column_desc->null_flag);
+      break;
+
+    case REC_CLOB :
+      type = new (heap)
+	SQLClob(column_desc->precision,Lob_Invalid_Storage,
+		column_desc->null_flag);
+      break;
+
+    default:
+      {
+	// 4031 Column %s is an unknown data type, %d.
+        if (!errorCode)
+        {
+	*CmpCommon::diags() << DgSqlCode(-4031)
+	  << DgColumnName(makeColumnName(table, column_desc))
+	  << DgInt0(column_desc->datatype);
+        }
+        else
+        {
+          *errorCode = 4031;
+        }
+	return TRUE;						// error
+      }
+    } // end switch (column_desc->datatype)
+
+  CMPASSERT(type);
+
+  if (type->getTypeQualifier() == NA_CHARACTER_TYPE) {
+    CharInfo::Collation co = ((CharType *)type)->getCollation();
+
+    // a "mini-cache" to avoid proc call, for perf
+    static THREAD_P CharInfo::Collation cachedCO = CharInfo::UNKNOWN_COLLATION;
+    static THREAD_P Int32         cachedFlags = CollationInfo::ALL_NEGATIVE_SYNTAX_FLAGS;
+
+    if (cachedCO != co) {
+      cachedCO = co;
+      cachedFlags = CharInfo::getCollationFlags(co);
+    }
+
+    if (cachedFlags & CollationInfo::ALL_NEGATIVE_SYNTAX_FLAGS) {
+      //
+      //## The NCHAR/COLLATE NSK-Rel1 project is forced to disallow all user-
+      //	defined collations here.  What we can't handle is:
+      //	- full support!  knowledge of how to really collate!
+      //	- safe predicate-ability of collated columns, namely
+      //	  . ORDER/SEQUENCE/SORT BY
+      //	    MIN/MAX
+      //	    < <= > >=
+      //		These *would* have been disallowed by the
+      //		CollationInfo::ORDERED_CMP_ILLEGAL flag.
+      //	  . DISTINCT
+      //	    GROUP BY
+      //	    = <>
+      //		These *would* have been disallowed by the
+      //		CollationInfo::EQ_NE_CMP_ILLEGAL flag.
+      //	  . SELECTing a collated column which is a table or index key
+      //		We *would* have done full table scan only, based on flag
+      //	  . INS/UPD/DEL involving a collated column which is a key
+      //		We *would* have had to disallow this, based on flag;
+      //		otherwise we would position in wrong and corrupt either
+      //		our partitioning or b-trees or both.
+      //	See the "MPcollate.doc" document, and
+      //	see sqlcomp/DefaultValidator.cpp ValidateCollationList comments.
+      //
+	{
+	  // 4069 Column TBL.COL uses unsupported collation COLLAT.
+	  if (!errorCode)
+	  {
+	  *CmpCommon::diags() << DgSqlCode(-4069)
+	    << DgColumnName(makeColumnName(table, column_desc));
+	  }
+	  else
+	  {
+	    *errorCode= 4069;
+	  }
+	  return TRUE;						// error
+	}
+    }
+  }
+
+  return FALSE;							// no error
+
+} // createNAType()
+
+// -----------------------------------------------------------------------
 // Method for inserting new NAColumn entries in NATable::colArray_,
 // one for each column_desc in the list supplied as input.
 // -----------------------------------------------------------------------
@@ -2891,16 +3315,16 @@ NABoolean createNAColumns(desc_struct *column_desc_list	/*IN*/,
          char* defaultValue = column_desc->defaultvalue;
          char* heading = column_desc->heading;
          char* computed_column_text = column_desc->computed_column_text;
+         NABoolean isSaltColumn = FALSE;
          NABoolean isDivisioningColumn = FALSE;
 
          if (column_desc->defaultClass == COM_ALWAYS_COMPUTE_COMPUTED_COLUMN_DEFAULT)
            {
-             if (computed_column_text ||
-                 defaultValue == NULL ||
-                 str_len(defaultValue) == 0)
-               // divisioning column, expression stored in TEXT metadata table
+             if (column_desc->colFlags & SEABASE_COLUMN_IS_SALT)
+               isSaltColumn = TRUE;
+             if (column_desc->colFlags & SEABASE_COLUMN_IS_DIVISION)
                isDivisioningColumn = TRUE;
-             else
+             if (!computed_column_text)
                {
                  computed_column_text = defaultValue;
                  defaultValue = NULL;
@@ -2933,7 +3357,7 @@ NABoolean createNAColumns(desc_struct *column_desc_list	/*IN*/,
 			       column_desc->colnumber,
 			       type,
                                heap,
-			       0 /* not a SQLMP KEYTAG column */,
+			       0,
 			       table,
 			       colClass,
 			       column_desc->defaultClass,
@@ -2946,44 +3370,13 @@ NABoolean createNAColumns(desc_struct *column_desc_list	/*IN*/,
                                NULL,
                                column_desc->stored_on_disk,
                                computed_column_text,
+                               isSaltColumn,
                                isDivisioningColumn);
 	}
       else
         {
-	  // Kludged KEYTAG column from srtdsrv.tal/RTD_Convert_Index_To_Table()
-	  // fetching INDEX metadata in BASETABLE format...
-	  // An empty COLNAME signals a KEYTAG column of what's actually an
-	  // MP INDEX -- the INDEX's KEYTAG VALUE is passed to us in the COLNUM,
-	  // which we save, then set to what we know is the real ordinal of
-	  // the KEYTAG column, i.e. zero.
-	  //
-	  // Some sanity checks to be on the safe side...
-	  //
-          if(table !=NULL)
-	    {
-	      
-	      CMPASSERT(table->isSQLMPTable());
-	      CMPASSERT(table->getSpecialType() == ExtendedQualName::INDEX_TABLE);
-	      CMPASSERT(colClass == SYSTEM_COLUMN);
-	      CMPASSERT(column_desc->offset == 0);
-	      unsigned short SQLMPKeytag = column_desc->colnumber;
-	      CMPASSERT(SQLMPKeytag);
-	      NAWchar* keytagStr = new (heap) NAWchar[20];
-	      NAWsprintf(keytagStr, WIDE_("%u"), (UInt32)SQLMPKeytag);
-	      
-	      newColumn = new (heap)
-		NAColumn(FUNNY_INTERNAL_IDENT("KEYTAG"),
-			 0 /* colnumber */,
-			 type,
-			 heap,
-			 SQLMPKeytag,
-			 table,
-			 colClass,
-			 COM_USER_DEFINED_DEFAULT,
-			 (char*)keytagStr
-			 );
-	    }
-	} // else
+          CMPASSERT(0);
+	}
       
       if (isMvSystemAdded)
 	newColumn->setMvSystemAddedColumn();
@@ -3080,6 +3473,9 @@ NABoolean createNAColumns(struct hive_column_desc* hcolumn /*IN*/,
       NAType* natype = getSQColTypeForHive(hcolumn->type_, heap);
 
       if ( !natype ) {
+	*CmpCommon::diags()
+	  << DgSqlCode(-1204)
+	  << DgString0(hcolumn->type_);
          return TRUE;
       }
 
@@ -4554,19 +4950,6 @@ NATable::NATable(BindWA *bindWA,
       setIsHbaseCellTable(corrName.isHbaseCell());
       setIsHbaseRowTable(corrName.isHbaseRow());
     }
-
-  // Check if it is a SQL/MP table, and set the flag to indicate this.
-  if (table_desc->body.table_desc.underlyingFileType == SQLMP)
-  {
-     setSQLMPTable(TRUE);
-     //need to store guardian name for future use. Ex. fetchHistograms need fully qualified guardian name
-     if((fileSetName_.getQualifiedNameAsString().data()[0])!='\\')
-      {
-      	ComMPLoc mpName(table_desc->body.table_desc.tablename,ComMPLoc::FULLFILE);
-      	QualifiedName qualName(mpName.getFileName(),mpName.getSubvolName(),mpName.getSysDotVol(),heap_);
-      	fileSetName_=qualName;
-      }
-  }
 
   // Check if the synonym name translation to reference object has been done.
   if (table_desc->body.table_desc.isSynonymNameTranslationDone)
@@ -6245,8 +6628,14 @@ NABoolean NATable::getCorrespondingConstraint(NAList<NAString> &inputCols,
 
 void NATable::setupPrivInfo()
 {
-  if (!CmpCommon::context()->isAuthorizationEnabled())
-    return;
+  privInfo_ = new(heap_) PrivMgrUserPrivs;
+  if (!isSeabaseTable() || 
+      !CmpCommon::context()->isAuthorizationEnabled() ||
+      isVolatileTable())
+    {
+      privInfo_->setOwnerDefaultPrivs();
+      return;
+    }
 
   Int32 thisUserID = ComUser::getCurrentUser();
 
@@ -6264,8 +6653,6 @@ void NATable::setupPrivInfo()
       return;
     }
 
-
-  privInfo_ = new(heap_) PrivMgrUserPrivs;
   std::vector <ComSecurityKey *> secKeyVec;
 
   bool testError = false;
@@ -6274,6 +6661,26 @@ void NATable::setupPrivInfo()
   if (tpie && *tpie == '1')
     testError = true;
 #endif
+
+  // Use embedded compiler before making call to getPrivileges
+  NABoolean switched = FALSE;
+  CmpContext* prevContext = CmpCommon::context();
+  ExeCliInterface cliInterface(STMTHEAP);
+  if (IdentifyMyself::GetMyName() == I_AM_EMBEDDED_SQL_COMPILER)
+    if (SQL_EXEC_SWITCH_TO_COMPILER_TYPE(CmpContextInfo::CMPCONTEXT_TYPE_META))
+    {
+      // Failed to switch/create metadata CmpContext; continue using current CmpContext.
+    }
+    else
+    {
+      switched = TRUE;
+      // send controls to the context we are switching to
+      sendAllControls(FALSE, FALSE, FALSE, COM_VERS_COMPILER_VERSION, TRUE, prevContext);
+      // Turn off hbase predicate filtering and esp parallelism, as they
+      // currently can cause problems.
+      cliInterface.holdAndSetCQD("hbase_filter_preds", "OFF");
+      cliInterface.holdAndSetCQD("attempt_esp_parallelism", "OFF");
+    }
 
   if (testError || (STATUS_GOOD !=
        privInterface.getPrivileges(objectUid().get_value(), thisUserID,
@@ -6288,7 +6695,21 @@ void NATable::setupPrivInfo()
 #endif
     NADELETE(privInfo_, PrivMgrUserPrivs, heap_);
     privInfo_ = NULL;
+    if (switched == TRUE)
+      {
+        SQL_EXEC_SWITCH_BACK_COMPILER();
+        cliInterface.restoreCQD("hbase_filter_preds");
+        cliInterface.restoreCQD("attempt_esp_parallelism");
+      }
     return;
+  }
+
+  CMPASSERT (privInfo_);
+  if (switched == TRUE)
+  {
+    SQL_EXEC_SWITCH_BACK_COMPILER();
+    cliInterface.restoreCQD("hbase_filter_preds");
+    cliInterface.restoreCQD("attempt_esp_parallelism");
   }
 
   for (std::vector<ComSecurityKey*>::iterator iter = secKeyVec.begin();
@@ -6405,6 +6826,30 @@ void NATable::lookupObjectUid()
 {
     QualifiedName qualName = getExtendedQualName().getQualifiedNameObj();
     objectUID_ = ::lookupObjectUid(qualName, objectType_);
+}
+
+bool NATable::isEnabledForDDLQI() const
+{
+  if (isSeabaseMD_ || isSMDTable_)
+    return false;
+  else 
+  {
+    if (objectUID_.get_value() == 0)
+    {
+      // Looking up object UIDs at code-gen time was shown to cause
+      // more than 10% performance regression in YCSB benchmark. In
+      // that investigation, we learned that metadata and histogram 
+      // NATables would have no object UID at code-gen and would 
+      // require the lookup.  We're pretty sure these are the only 
+      // types of tables but will abend here otherwise. If this 
+      // causes problems, the envvar below can be used as a 
+      // temporary workaround. 
+      char *noAbendOnLp1398600 = getenv("NO_ABEND_ON_LP_1398600");
+      if (!noAbendOnLp1398600 || *noAbendOnLp1398600 == '0')
+        abort();
+    }
+    return true;
+  }
 }
 
 NATable::~NATable()
@@ -7475,6 +7920,15 @@ NATable * NATableDB::get(CorrName& corrName, BindWA * bindWA,
 	  remove(table->getKey());
 	  table = NULL;
 	}
+    }
+
+  if (table && (corrName.isHbaseCell() || corrName.isHbaseRow()))
+    {
+      if (NOT HbaseAccess::validateVirtualTableDesc(table))
+        {
+          remove(table->getKey());
+          table = NULL;
+        }
     }
 
   // for caching statistics

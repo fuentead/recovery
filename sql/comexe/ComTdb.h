@@ -68,12 +68,6 @@ struct ex_eye_catcher
 #define eye_CONTROL_QUERY                                           "CQRY"
 #define eye_DDL                                                     "DDL "
 #define eye_DESCRIBE                                                "DESC"
-#define eye_DP2_DEL_UNIQ                                            "DPDU"
-#define eye_DP2_INSERT                                              "DP2I"
-#define eye_DP2_OPER                                                "DPOP"
-#define eye_DP2_SUBS_OPER                                           "DPSO"
-#define eye_DP2_UNIQ_OPER                                           "DPUO"
-#define eye_DP2_VSBB_INSERT                                         "DPVI"
 #define eye_FASTSORT                                                "FSRT"
 #define eye_FIRST_N                                                 "FSTN"
 #define	eye_FREE                                                    "FREE"
@@ -114,8 +108,6 @@ struct ex_eye_catcher
 #define eye_IM_DATA                                                 "IMDT"
 #define eye_VPJOIN                                                  "VPJN"
 #define eye_UDR                                                     "UDR "
-#define eye_INTERPRET_AS_ROW                                        "IAR"
-#define eye_PARALLEL_LABEL_OP                                       "PLAB"
 #define eye_CANCEL                                                  "CNCL"
 #define eye_FAST_EXTRACT                                            "EXTR"
 #define eye_HDFS_SCAN                                            "HDFS"
@@ -245,15 +237,6 @@ public:
     ex_FASTSORT = 13,
     ex_HASHJ = 14,              // hash join
 
-    ex_DP2_OPER = 20,           // Base class for all DP2 operators
-
-    ex_DP2_SUBS_OPER = 23,    //mdam & single subs oper (get, delete or update)
-    ex_DP2_UNIQUE_OPER = 25,  // non-mdam unique operations 
-    ex_EID_ROOT = 26,         // root operator of exe in dp2.
-    ex_DP2_INSERT = 30,       // Base class for all DP2 insert operators
-    ex_DP2_VSBB_INSERT = 31,
-    ex_DP2_VSBB_SIDETREE_INSERT = 32,
-
     ex_HASH_GRBY = 50,          // hash groupby
     ex_LOCK = 51,               // Lock/Unlock Table/View
 
@@ -286,15 +269,12 @@ public:
     ex_COMPOUND_STMT = 93,
 
     ex_SET_TIMEOUT = 94, 
-    ex_DP2_UNIQUE_LEAN_OPER = 95,  // olt opt unique lean oper (root + oper in one)
     ex_UDR = 100,               // User-defined routines
     ex_EXE_UTIL = 101,          // general exe util tdb, used to implement
                                 // a variety of requests. See ComTdbExeUtil.
     ex_REORG = 102,
     ex_DISPLAY_EXPLAIN = 103,
     ex_MAINTAIN_OBJECT = 104,
-    ex_INTERPRET_AS_ROW = 105,
-    ex_PARALLEL_LABEL_OP = 106, // Parallel label create/drop operations.
     ex_PROCESS_VOLATILE_TABLE = 107,
     ex_LOAD_VOLATILE_TABLE = 108,
     ex_CLEANUP_VOLATILE_TABLES = 109,
@@ -921,19 +901,18 @@ class ComTdbVirtTableTableInfo  : public ComTdbVirtTableBase
 class ComTdbVirtTableColumnInfo : public ComTdbVirtTableBase
 {
  public:
-  ComTdbVirtTableColumnInfo(const char * cName, Lng32 cNum, const char * cc,
+  ComTdbVirtTableColumnInfo(const char * cName, Lng32 cNum, ComColumnClass cc,
                             Lng32 dt, Lng32 l, Lng32 n, SQLCHARSET_CODE cs,
                             Lng32 p, Lng32 s, Lng32 dtS, Lng32 dtE, Lng32 u,
                             const char * ch, ULng32 flags, ComColumnDefaultClass dc,
                             const char * defVal, const char * hcf, const char * hcq,
                             const char * pd, Lng32 io) 
     : ComTdbVirtTableBase(),
-    colName(cName), colNumber(cNum), 
+      colName(cName), colNumber(cNum), columnClass(cc),
     datatype(dt), length(l), nullable(n), charset(cs), precision(p), scale(s),
     dtStart(dtS), dtEnd(dtE), upshifted(u), colHeading(ch), hbaseColFlags(flags),
-    defaultClass(dc), hbaseColFam(hcf), hbaseColQual(hcq), isOptional(io)
+      defaultClass(dc), hbaseColFam(hcf), hbaseColQual(hcq), isOptional(io), colFlags(0)
   {
-    strcpy(columnClass, cc);
     strcpy(paramDirection, pd);
   };
   
@@ -947,7 +926,7 @@ class ComTdbVirtTableColumnInfo : public ComTdbVirtTableBase
 
   const char * colName;
   Lng32   colNumber;
-  char columnClass[4];
+  ComColumnClass columnClass;
   Lng32   datatype;
   Lng32   length;
   Lng32   nullable;
@@ -965,6 +944,7 @@ class ComTdbVirtTableColumnInfo : public ComTdbVirtTableBase
   const char * hbaseColQual;
   char paramDirection[4];
   Lng32 isOptional; // 0, regular (does not apply OR FALSE). 1, Param is optional
+  Int64 colFlags;
 };
 
 class ComTdbVirtTableKeyInfo : public ComTdbVirtTableBase

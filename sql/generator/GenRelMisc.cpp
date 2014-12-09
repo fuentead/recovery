@@ -61,7 +61,6 @@
 #include "ComTdbExeUtil.h"
 #include "ComTdbFirstN.h"
 #include "ComTdbStats.h"
-#include "ComTdbInterpretAsRow.h"
 #include "ComTdbCancel.h"
 #include "ExplainTuple.h"
 #include "ComTdbHbaseAccess.h"
@@ -639,33 +638,6 @@ QuerySimilarityInfo * RelRoot::genSimilarityInfo(Generator *generator)
   GenOperSimilarityInfo * iudSimInfo = NULL;
   short iudSimInfoPosition = 0;
   CollIndex i = 0;
-  for (i = 0;
-       ((NOT recompOnTSMismatch) && (i < generator->genOperSimInfoList().entries()));
-	i++)
-    {
-      GenOperSimilarityInfo * osi=
-	(GenOperSimilarityInfo *)(generator->genOperSimInfoList()[i]);
-
-      if (osi->getOper() >= REL_DP2_INSUPDDEL_FIRST &&
-	  osi->getOper() <= REL_DP2_INSUPDDEL_LAST &&
-	  (osi->getIndexDesc()->getPrimaryTableDesc()->getNATable()->getExtendedQualName().getSpecialType() == ExtendedQualName::NORMAL_TABLE  ||
-       osi->getIndexDesc()->getPrimaryTableDesc()->getNATable()->getExtendedQualName().getSpecialType() == ExtendedQualName::TRIGTEMP_TABLE))
-	{
-	  if (iudSeen) // second time around
-	    recompOnTSMismatch = TRUE; // disable sim check
-	  else
-	    {
-#pragma warning (disable : 4244)  //warning elimination
-#pragma nowarn(1506)   // warning elimination
-	      iudSimInfoPosition = i;
-#pragma warn(1506)  // warning elimination
-#pragma warning (default : 4244)  //warning elimination
-	      iudSimInfo = osi;
-	    }
-
-	  iudSeen = TRUE;
-	}
-    }
 
   // disable similarity check if a view was referenced in the query.
   if (getViewStoiList().entries() > 0)
@@ -1395,6 +1367,7 @@ short RelRoot::codeGen(Generator * generator)
 
     GenAssert(update != NULL, "UPDATE CURRENT OF: NULL update node");
 
+    /*
     // create the update col list for UPDATE...WHERE CURRENT OF CURSOR only.
     // The updateCurrentOf() is set for both UPDATE and DELETE queries.
     if ((update->getOperatorType() == REL_DP2_UPDATE_CURSOR) ||
@@ -1419,16 +1392,15 @@ short RelRoot::codeGen(Generator * generator)
             updateColList[i] = updateStoi->getUpdateColumn(i);
 	  }
       } // update...where current of.
+    */
   }
   else if (updatableSelect())
-  {
-#pragma nowarn(1506)   // warning elimination
-    numUpdateCol = updateCol().entries();
-#pragma warn(1506)  // warning elimination
-
-    if (numUpdateCol > 0)
     {
-      // Allocate an array for the column list.
+      numUpdateCol = updateCol().entries();
+      
+      if (numUpdateCol > 0)
+        {
+          // Allocate an array for the column list.
       updateColList = new(space) Lng32[numUpdateCol];
 
       // Populate the array with the update columns of this node.
@@ -2483,24 +2455,15 @@ short RelRoot::codeGen(Generator * generator)
     {
       if ((childOper == REL_UNARY_INSERT) ||
 	  (childOper == REL_LEAF_INSERT) ||
-	  (childOper == REL_INSERT_CURSOR) ||
-	  (childOper == REL_DP2_INSERT_CURSOR) ||
-	  (childOper == REL_DP2_INSERT_VSBB) ||
-	  (childOper == REL_DP2_INSERT_SIDETREE))
+	  (childOper == REL_INSERT_CURSOR))
 	root_tdb->setQueryType(ComTdbRoot::SQL_INSERT_NON_UNIQUE);
       else if ((childOper == REL_UNARY_UPDATE) ||
 	       (childOper == REL_LEAF_UPDATE) ||
-	       (childOper == REL_UPDATE_CURSOR) ||
-	       (childOper == REL_DP2_UPDATE_UNIQUE) ||
-	       (childOper == REL_DP2_UPDATE_CURSOR) ||
-	       (childOper == REL_DP2_UPDATE_SUBSET))
+	       (childOper == REL_UPDATE_CURSOR))
 	root_tdb->setQueryType(ComTdbRoot::SQL_UPDATE_NON_UNIQUE);
       else if ((childOper == REL_UNARY_DELETE) ||
 	       (childOper == REL_LEAF_DELETE) ||
-	       (childOper == REL_DELETE_CURSOR) ||
-	       (childOper == REL_DP2_DELETE_UNIQUE) ||
-	       (childOper == REL_DP2_DELETE_CURSOR) ||
-	       (childOper == REL_DP2_DELETE_SUBSET))
+	       (childOper == REL_DELETE_CURSOR))
 	root_tdb->setQueryType(ComTdbRoot::SQL_DELETE_NON_UNIQUE);
     }
   
@@ -2512,39 +2475,6 @@ short RelRoot::codeGen(Generator * generator)
       (rwrsInfo))
     {
       root_tdb->setQueryType(ComTdbRoot::SQL_INSERT_RWRS);
-    }
-  else if ((child(0)) &&
-	   (child(0)->castToRelExpr()->getOperatorType() == REL_PARTITION_ACCESS) &&
-	   (child(0)->child(0)))
-    {
-      OperatorTypeEnum currGrandChildOper =
-	child(0)->child(0)->castToRelExpr()->getOperatorType();
-
-      if (childOperType() == REL_SCAN)
-	{
-	    root_tdb->setQueryType(ComTdbRoot::SQL_SELECT_NON_UNIQUE);
-	}
-      else if (childOperType() == REL_UNARY_INSERT)
-	{
-	  if (currGrandChildOper == REL_DP2_INSERT_CURSOR)
-	    root_tdb->setQueryType(ComTdbRoot::SQL_INSERT_UNIQUE);
-	  else
-	    root_tdb->setQueryType(ComTdbRoot::SQL_INSERT_NON_UNIQUE);
-	}
-      else if (childOperType() == REL_UNARY_UPDATE)
-	{
-	  if (currGrandChildOper == REL_DP2_UPDATE_UNIQUE)
-	    root_tdb->setQueryType(ComTdbRoot::SQL_UPDATE_UNIQUE);
-	  else
-	    root_tdb->setQueryType(ComTdbRoot::SQL_UPDATE_NON_UNIQUE);
-	}
-      else if (childOperType() == REL_UNARY_DELETE)
-	{
-	  if (currGrandChildOper == REL_DP2_DELETE_UNIQUE)
-	    root_tdb->setQueryType(ComTdbRoot::SQL_DELETE_UNIQUE);
-	  else
-	    root_tdb->setQueryType(ComTdbRoot::SQL_DELETE_NON_UNIQUE);
-	}
     }
   else if ((child(0)) &&
 	   (child(0)->castToRelExpr()->getOperatorType() == REL_UTIL_INTERNALSP))
@@ -2825,6 +2755,10 @@ short RelRoot::codeGen(Generator * generator)
       root_tdb->setDp2XnsEnabled(generator->dp2XnsEnabled());
     }
 
+  
+  if (generator->processLOB())
+    root_tdb->setProcessLOB(TRUE);
+ 
 
   // Self-referencing updates
   if (avoidHalloween_)
@@ -5315,260 +5249,6 @@ short StatisticsFunc::codeGen(Generator* generator)
   return 0;
 }
 
-//-----------------------------------------------------------------------------
-// PhysicalInterpretAsRow::codeGen() generates code that at run-time is used
-// to execute the INTERPRET_AS_ROW operator. Internally, the INTERPRET_AS_ROW
-// operator takes an audit row as input. This row is in the disk format for
-// the table the audit was generated for - SQLMX_FORMAT or SQLMX_ALIGNED_FORMAT.
-// It applies an extraction expression to the audit row to generate an
-// extracted row, which is in executor internal format. A selection predicate,
-// if any, is then evaluated on this extracted row. If the expression evaluation
-// returns a TRUE (i.e., the extracted row met the selection criteria), then
-// the extracted row is passed in to a projection expression, to be projected
-// into the output row that is returned to the parent. Note that the projected 
-// row (the row that is the output of this operator) contains a subset of the 
-// columns that are part of the extracted row.
-//----------------------------------------------------------------------------- 
-short PhysicalInterpretAsRow::codeGen(Generator *generator)
-{
-   Space * space = generator->getSpace();
-   ExpGenerator *exp_gen = generator->getExpGenerator();
-   ExplainTuple *childExplainTuple = generator->getExplainTuple();
-
-   ex_cri_desc *givenDesc = generator->getCriDesc(Generator::DOWN);
-#pragma nowarn(1506)   // warning elimination
-   ex_cri_desc *returnedDesc = new (space) ex_cri_desc(givenDesc->noTuples()+1,
-                                                       space);
-#pragma warn(1506)   // warning elimination
-   // Allocate a work cri desc for the work Atp with 3 tupps:
-   // 0: for constants (not used)
-   // 1: for temps (not used)
-   // 2: for extracted tuple
-   ex_cri_desc *workCriDesc = new (space) ex_cri_desc(3, space);
-   Int32 returnedAtpIndex = returnedDesc->noTuples()-1;
-   Int32 returnedAtp = 0;
-   Int32 workAtp = 1;
-   Int32 workAtpIndex = 2;
-   queue_index upQueueSize = (queue_index)getDefault(GEN_IAR_SIZE_UP);
-   queue_index downQueueSize = (queue_index)getDefault(GEN_IAR_SIZE_DOWN);
-   ex_expr *extractExpr = NULL;
-   ex_expr *scanExpr = NULL;
-   ex_expr *projExpr = NULL;
-   Lng32 numBuffers = (Lng32)getDefault(GEN_IAR_NUM_BUFFERS); 
-   ULng32 bufferSize = getDefault(GEN_IAR_BUFFER_SIZE);
-   Cardinality estimatedRowCount = 1;
-   ValueIdList vidColumnsToExtract;
-   ValueIdSet projectionCols;
-   ULng32 encodedKeyLength;
-   ExpTupleDesc *extractedRowTupleDesc = 0;
-   ULng32 extractedRowLength = 0;
-   CollIndex numExtractCols = 0;
-   ULng32 *extractColList = NULL;
-   ValueIdList convValIdList;
-   MapTable * returnedMapTable = 0;
-   MapTable * lastMapTable = generator->getLastMapTable();
- 
-   // Generate a tuple descriptor for the tuple that comprises the audit row
-   // before and/or after image.
-   ExpTupleDesc *auditImageTupleDesc = 0;
-   ULng32 auditImageRowLength = 0;
-
-   Attributes * auditImageAttr = generator->getMapInfo
-                                           (getAuditImageVid())->getAttr();
-   exp_gen->processValIdList(
-                    getTableDesc()->getClusteringIndex()->getIndexColumns(),
-                    generator->getTableDataFormat(getTableDesc()->getNATable()),
-                             auditImageRowLength,
-                             returnedAtp,
-                             auditImageAttr->getAtpIndex(), 
-                             &auditImageTupleDesc, ExpTupleDesc::LONG_FORMAT
-                            );
-
-   // add default values to the tuple descriptor. These are needed in case
-   // there are added columns that are missing in the audit row image. Note that
-   // only for uncompressed audit, are default values returned for missing 
-   // columns. For compressed audit, it is unclear whether a column is missing
-   // in the audit row image because it is an added column, or because it has
-   // not been updated. For compressed audit, attempting to extract missing
-   // columns results in an error. 
-   exp_gen->addDefaultValues(getTableDesc()->getClusteringIndex()->getIndexColumns(),
-                             getTableDesc()->getClusteringIndex()->getAllColumns(),
-                             auditImageTupleDesc
-                            );
-
-   ValueIdSet outputCols = getGroupAttr()->getCharacteristicOutputs();
-   ValueIdSet extractionCols = columnsToExtract();
- 
-   for (ValueId valId = extractionCols.init();
-        extractionCols.next(valId);
-        extractionCols.advance(valId))
-   {
-      vidColumnsToExtract.insert(valId);
-   }
-
-   ExpTupleDesc::TupleDataFormat tupleFormat = generator->getInternalFormat();
-
-   if (!extractionCols.isEmpty())
-   {
-      // Generate a tuple descriptor for the tuple that comprises the extracted
-      // columns.
-      exp_gen->processValIdList (vidColumnsToExtract,
-                                 tupleFormat,
-                                 extractedRowLength,
-                                 workAtp,
-                                 workAtpIndex,
-                                 &extractedRowTupleDesc, ExpTupleDesc::LONG_FORMAT
-                                );
-
-#pragma nowarn(1506)   // warning elimination
-      workCriDesc->setTupleDescriptor(workAtpIndex,extractedRowTupleDesc);
-#pragma warn(1506)   // warning elimination
-
-      // Create an extract column list extractColList, based on the 
-      // vidColumnsToExtract_ value id list. 
-      numExtractCols = vidColumnsToExtract.entries();
-      extractColList = new (space) ULng32[numExtractCols];
-      BaseColumn *extractedColumn = 0;
-      ULng32 extractedColNum;
-
-      for (CollIndex i=0; i<numExtractCols; i++)
-      {
-        ValueId colValId = vidColumnsToExtract[i];
-        extractedColumn = (BaseColumn *)(colValId.getItemExpr());
-        extractedColNum = extractedColumn->getColNumber();
-        extractColList[i] = extractedColNum;
-      }
-
-      // Determine the encoded key length, since this is needed for
-      // compressed audit, where the audit record looks as shown below:
-      // |-- encoded key --|-- after image --|-- before image --|
-      encodedKeyLength = 
-          getTableDesc()->getClusteringIndex()->getKeyLength(); 
-
-      // generate an extraction expression, passing in the audit row image tuple
-      // descriptor, the extracted row tuple descriptor, the extraction list,
-      // and the compression flag along with the valueids for the mfMap and
-      // the audit row image. This expression contains a single clause of
-      // type ExFunctionExtractColumns, that takes two input operands (namely
-      // the audit row image and the modified field map), and generates an
-      // extracted row, made up of columns in the extraction column list.
-      exp_gen->generateIarExtractionExpr(workAtp,
-                                         workAtpIndex,
-                                         vidColumnsToExtract,
-                                         (Int32)extractedRowLength,
-                                         getAuditImageVid(),
-                                         getMFMapVid(),
-                                         extractedRowTupleDesc,
-                                         auditImageTupleDesc,
-                                         extractColList,
-                                         getCompressedAuditFlag(),
-                                         encodedKeyLength,
-                                         &extractExpr
-                                        );
-   }
-
-   // Generate a selection expression that will take the extracted row, and 
-   // determine if it meets the selection criteria.
-   ItemExpr *selectionPredTree = NULL;
-   if (!selectionPred().isEmpty())
-   {
-      selectionPredTree = selectionPred().rebuildExprTree (ITM_AND,TRUE,TRUE);
-      exp_gen->generateExpr(selectionPredTree->getValueId(), 
-                            ex_expr::exp_SCAN_PRED,
-                            &scanExpr);
-   }
-
-   // There is no need to project constants - remove these, if any, from
-   // the set of projected columns.
-   for (ValueId outputValId = outputCols.init();
-        outputCols.next(outputValId);
-        outputCols.advance(outputValId))
-   {
-      ValueId dummyValId;
-      if (outputValId.getItemExpr()->getOperatorType() != ITM_CONSTANT)
-         projectionCols += outputValId;
-   }
- 
-   // Generate a projection expression that will take the extracted row, and
-   // project the columns that are needed by the caller.
-   ExpTupleDesc * projectedTupleDesc;
-   ULng32 projectedRowLen = 0;
-   exp_gen->generateContiguousMoveExpr(projectionCols,
-                                       -1 /*add conv nodes*/,
-                                       returnedAtp,
-                                       returnedAtpIndex,
-                                       tupleFormat,
-                                       projectedRowLen,
-                                       &projExpr,
-                                       &projectedTupleDesc,
-                                       ExpTupleDesc::SHORT_FORMAT,
-                                       &returnedMapTable,
-                                       &convValIdList);
-
-#pragma nowarn(1506)   // warning elimination
-   returnedDesc->setTupleDescriptor(returnedDesc->noTuples() - 1,
-                                    projectedTupleDesc);
-#pragma warn(1506)  // warning elimination
-
-   // Change the atp of projected (output) column attrs to 0. All references 
-   // to these values from this point on will be at atp = 0, atp_index = last 
-   // entry in returned desc.  Offset will be the same as in the workAtp.
-   CollIndex i = 0;
-   for (ValueId valueId=projectionCols.init();
-        projectionCols.next(valueId);
-        projectionCols.advance(valueId) )
-   {
-      MapInfo * mapInfo = generator->getMapInfoAsIs(valueId);
-      if (mapInfo) 
-      {
-         Attributes * attr = mapInfo->getAttr();
-         Attributes * convNodeAttr = generator->getMapInfo(convValIdList[i])->getAttr();
-         attr->copyLocationAttrs(convNodeAttr);
-         attr->setAtp(0);
-#pragma nowarn(1506)   // warning elimination
-         attr->setAtpIndex(returnedDesc->noTuples() - 1);
-#pragma warn(1506)  // warning elimination
-         i++;
-      }
-   };
-
-   // Done with expressions at this operator. Remove the appended map tables.
-   generator->removeAll(lastMapTable);
-
-   if (returnedMapTable)
-       generator->appendAtEnd(returnedMapTable);
- 
-   // Allocate the task definition block to be sent to the executor as part
-   // of the compiled plan.
-   ComTdbInterpretAsRow *iarTdb;
-   iarTdb = new (space) ComTdbInterpretAsRow (getCompressedAuditFlag(),
-                                              extractedRowLength,
-                                              auditImageRowLength,
-                                              projectedRowLen,
-                                              estimatedRowCount,
-                                              workCriDesc,
-                                              givenDesc,
-                                              returnedDesc,
-                                              extractExpr,
-                                              scanExpr,
-                                              projExpr,
-                                              upQueueSize,
-                                              downQueueSize,
-                                              numBuffers,
-                                              bufferSize );
-   // Generate explain information, if needed
-   if (!generator->explainDisabled())
-   {
-      generator->setExplainTuple(addExplainInfo(iarTdb, childExplainTuple,
-                                                0, generator));
-   }
-   
-   generator->setCriDesc(givenDesc, Generator::DOWN);
-   generator->setCriDesc(returnedDesc, Generator::UP);
-   generator->setGenObj(this, iarTdb);
-   return 0; 
-}
-
 // -----------------------------------------------------------------------
 // ProxyFunc methods
 // -----------------------------------------------------------------------
@@ -5689,8 +5369,74 @@ short PhysicalExtractSource::codeGen(Generator *)
 /////////////////////////////////////////////////////////
 short ControlRunningQuery::codeGen(Generator * generator)
 {
-      *CmpCommon::diags() << DgSqlCode(-1010);
-      GenExit();
-      return -1;
+  Space * space = generator->getSpace();
+
+  GenAssert((child(0) == NULL) && (child(1) == NULL),
+    "ControlRunningQuery does not expect any child.");
+
+  char *qid =
+    space->allocateAndCopyToAlignedSpace(queryId_, str_len(queryId_), 0);
+
+  char *pname =
+     space->allocateAndCopyToAlignedSpace(pname_, str_len(pname_), 0);
+
+  char *comment =
+    space->allocateAndCopyToAlignedSpace(comment_, str_len(comment_), 0);
+
+  ComTdbCancel::Action a = ComTdbCancel::InvalidAction;
+  switch (action_)
+  {
+    case Cancel:
+    {
+      switch (qs_)
+      {
+        case ControlQid:    
+          a = ComTdbCancel::CancelByQid;    
+          break;
+        case ControlPname:  
+        case ControlNidPid:
+          break;
+        default: 
+          GenAssert(0, "Invalid ControlRunningQuery::qs_"); break;
+      }
+      break;
+    }
+   case Suspend: 
+   case Activate:
+     break;
+   default: GenAssert(0, "Invalid ControlRunningQuery::action_");
+  }
+
+  if (a == ComTdbCancel::InvalidAction)
+  {
+    *CmpCommon::diags() << DgSqlCode(-1010);
+    GenExit();
+    return -1;
+  }
+
+  ComTdbCancel * exe_cancel_tdb = new(space)
+    ComTdbCancel(qid, pname, nid_, pid_,
+                 getDefault(CANCEL_MINIMUM_BLOCKING_INTERVAL),
+                 a,  forced_, comment,
+                 generator->getCriDesc(Generator::DOWN),
+                 generator->getCriDesc(Generator::DOWN),
+                 (queue_index)getDefault(GEN_DDL_SIZE_DOWN),
+                 (queue_index)getDefault(GEN_DDL_SIZE_UP)
+                );
+
+  generator->initTdbFields(exe_cancel_tdb);
+
+  // no tupps are returned
+  generator->setCriDesc((ex_cri_desc *)
+    (generator->getCriDesc(Generator::DOWN)),
+                           Generator::UP);
+  generator->setGenObj(this, exe_cancel_tdb);
+
+  if(!generator->explainDisabled()) {
+    generator->setExplainTuple(
+       addExplainInfo(exe_cancel_tdb, 0, 0, generator));
+  }
+
+  return 0;
 }
 

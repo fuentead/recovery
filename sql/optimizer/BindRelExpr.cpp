@@ -1441,7 +1441,7 @@ NATable *BindWA::getNATable(CorrName& corrName,
         }
       }
 
-      //get NATable from cache
+      //get NATable (from cache or from metadata)
       table = bindWA->getSchemaDB()->getNATableDB()->
                                      get(corrName, bindWA, inTableDescStruct);
 
@@ -4862,6 +4862,38 @@ RelExpr *RelRoot::bindNode(BindWA *bindWA)
               ins->enableAqrWnrEmpty() = TRUE;
           }
 	}
+      
+      // if lob is being extracted as chunks of string, then only one
+      // such expression could be specified in the select list.
+      // If this is the case, then insert ExeUtilLobExtract operator.
+      // This operator reads lob contents and returns them to caller as
+      // multiple rows.
+      // This lobextract function could only be used in the outermost select
+      // list and must be converted at this point.
+      // It is not evaluated on its own.
+      if (getCompExprTree())
+	{
+	  ItemExprList selList(bindWA->wHeap());
+	  selList.insertTree(getCompExprTree());
+	  if ((selList.entries() == 1) &&
+	      (selList[0]->getOperatorType() == ITM_LOBEXTRACT))
+	    {
+	      LOBextract * lef = (LOBextract*)selList[0];
+	      
+	      ExeUtilLobExtract * le =
+		new (PARSERHEAP()) ExeUtilLobExtract
+		(lef, ExeUtilLobExtract::TO_STRING_,
+		 NULL, NULL, lef->getTgtSize(), 0,
+		 NULL, NULL, NULL, child(0), PARSERHEAP());
+	      le->setHandleInStringFormat(FALSE);
+	      setChild(0, le);
+	 
+	    }
+	     
+
+	}
+	
+      
 
       processRownum(bindWA);
       
@@ -6189,16 +6221,12 @@ NABoolean RelRoot::checkPrivileges(BindWA* bindWA)
       return TRUE;
     }
 
-  // for now, return if root user.  There is a chicken and egg problem
-  // when check privileges is called during startup
-  // TDB - add something in context to know when we have set the current
-  // user ID in the globals.
-  Int32 thisUserID = ComUser::getCurrentUser();
+  // return if root user
   NAString qiPath = "";
   CmpCommon::getDefault(QI_PATH, qiPath, FALSE);
   if ( qiPath.length() == 0 ) // If debugging or regression testing Query Invalidation, skip root check
   {
-    if (ComUser::isRootUserID(thisUserID))
+    if (ComUser::isRootUserID())
       return TRUE;
   }
 
@@ -6213,12 +6241,6 @@ NABoolean RelRoot::checkPrivileges(BindWA* bindWA)
   if (!CmpCommon::context()->isAuthorizationEnabled())
     return TRUE;
 
-  std::string privMDLoc(ActiveSchemaDB()->getDefaults().getValue(SEABASE_CATALOG));
-  privMDLoc += std::string(".\"") +
-               std::string(SEABASE_PRIVMGR_SCHEMA) +
-               std::string("\"");
-  PrivMgrCommands privInterface(privMDLoc, CmpCommon::diags());
-
   ComBoolean QI_enabled = (CmpCommon::getDefault(CAT_ENABLE_QUERY_INVALIDATION) == DF_ON);
 
   SqlTableOpenInfo * stoi = NULL ;
@@ -6229,6 +6251,7 @@ NABoolean RelRoot::checkPrivileges(BindWA* bindWA)
   // Note: The following code doesn't care about the object's hash value or the resulting 
   // ComSecurityKey's ActionType....we just need the hash value for the User's ID.
   int64_t objectUID = 12345;
+  Int32 thisUserID = ComUser::getCurrentUser();
   ComSecurityKey userKey( thisUserID , objectUID
                          , SELECT_PRIV
                          , ComSecurityKey::OBJECT_IS_OBJECT
@@ -6246,7 +6269,7 @@ NABoolean RelRoot::checkPrivileges(BindWA* bindWA)
     optStoi = (bindWA->getStoiList())[i];
     stoi = optStoi->getStoi();
     NATable* tab = optStoi->getTable();
-    if (tab->isSeabaseMDTable() || tab->isSeabasePrivSchemaTable())
+    if (tab->isSeabaseMDTable() )
       continue;
 
     // Privilege info for the user/table combination is stored in the NATable
@@ -6393,16 +6416,16 @@ NABoolean RelRoot::checkPrivileges(BindWA* bindWA)
   // dealing with RemoveNARoutineEntryFromCache are commented out!
 
   // NABoolean RemoveNARoutineEntryFromCache = FALSE ;
+  NAString privMDLoc = CmpSeabaseDDL::getSystemCatalogStatic();
+  privMDLoc += ".\"";
+  privMDLoc += SEABASE_PRIVMGR_SCHEMA;
+  privMDLoc += "\"";
+
+  PrivMgrCommands privInterface(privMDLoc.data(), CmpCommon::diags());
+
   OptUdrOpenInfo * udrStoi = NULL;
   if (bindWA->getUdrStoiList().entries())
   {
-    NAString privMDLoc = CmpSeabaseDDL::getSystemCatalogStatic();
-    privMDLoc += ".\"";
-    privMDLoc += SEABASE_PRIVMGR_SCHEMA;
-    privMDLoc += "\"";
-
-    PrivMgrCommands privInterface(privMDLoc.data(), CmpCommon::diags());
-
     for(Int32 i=0; i<(Int32)bindWA->getUdrStoiList().entries(); i++)
     {
       thisPrivCheckSuccess = TRUE ;  // Initialize each time through loop
@@ -6462,7 +6485,7 @@ NABoolean RelRoot::checkPrivileges(BindWA* bindWA)
     coProcAggr = (bindWA->getCoProcAggrList())[i];
     NATable* tab = bindWA->getSchemaDB()->getNATableDB()->
                                    get(coProcAggr->getCorrName(), bindWA, NULL);
-    if (tab->isSeabaseMDTable() || tab->isSeabasePrivSchemaTable())
+    if (tab->isSeabaseMDTable())
       continue;
 
     PrivMgrUserPrivs* privInfo = tab->getPrivInfo();
@@ -9141,6 +9164,55 @@ RelExpr *Insert::bindNode(BindWA *bindWA)
       setInsertSelectQuery(TRUE);
     }
 
+ 
+  // if table has a lob column, then fix up any reference to LOBinsert
+  // function in the source values list
+  if ((getOperatorType() == REL_UNARY_INSERT) &&
+      (getTableDesc()->getNATable()->hasLobColumn()) &&
+      (child(0)->getOperatorType() == REL_TUPLE || // VALUES (1,'b')
+       child(0)->getOperatorType() == REL_TUPLE_LIST)) // VALUES (1,'b'),(2,'Y')
+    {
+      if (child(0)->getOperatorType() == REL_TUPLE_LIST)
+	{
+	  TupleList * tl = (TupleList*)(child(0)->castToRelExpr());
+	  for (CollIndex x = 0; x < (UInt32)tl->numTuples(); x++)
+	    {
+	      ValueIdList tup;
+	      if (!tl->getTuple(bindWA, tup, x)) 
+		{
+		  bindWA->setErrStatus();
+
+		  return boundExpr; // something went wrong
+		}
+	      
+	      for (CollIndex n = 0; n < tup.entries(); n++)
+		{
+		  ItemExpr * ie = tup[n].getItemExpr();
+		  if (ie->getOperatorType() == ITM_LOBINSERT)
+		    {
+		      // cannot have this function in a values list with multiple
+		      // tuples. Use a single tuple.
+		      *CmpCommon::diags() << DgSqlCode(-4483);
+		      bindWA->setErrStatus();
+		      
+		      return boundExpr; 
+		      
+   
+		      LOBinsert * li = (LOBinsert*)ie;
+		      li->insertedTableObjectUID() = 
+			getTableDesc()->getNATable()->objectUid().castToInt64();
+		      li->lobNum() = n;
+
+		      li->insertedTableSchemaName() = 
+			getTableDesc()->getNATable()->
+			getTableName().getSchemaName();
+		    }
+		} // for
+	    } // for
+	} // if tuplelist
+
+    } // if
+ 
 
   // Prepare for any IDENTITY column checking later on
   NAString identityColumnName;
@@ -13178,7 +13250,7 @@ RelExpr * SetSessionDefault::bindNode(BindWA *bindWA)
       if ((token_ == "SET_PARSERFLAGS") ||
           (token_ == "RESET_PARSERFLAGS"))
         {
-          if (!ComUser::isRootUserID(ComUser::getCurrentUser()))
+          if (!ComUser::isRootUserID())
             {
               *CmpCommon::diags() << DgSqlCode(-1017);
               bindWA->setErrStatus();
@@ -15813,90 +15885,6 @@ void RelRoutine::gatherParamValueIds (const ItemExpr *tree, ValueIdList &paramsL
   else
     paramsList.insert(tree->getValueId());
 } // RelRoutine::gatherParamValueIds
-
-// InterpretAsRow::bindNode - bind the InterpretAsRow node.
-// This does the following:
-// - Checks objectName_ to make sure it refers to a valid SQL/MX table or index.
-// - Binds the ItemExprs representing the auditRowImage_ and the 
-//   modifiedFieldMap host variables or parameters.
-// - Sets up RETDesc with valueids of all the columns in the table specified
-//   in the call to INTERPRET_AS_ROW. These are also added to the group 
-//   attribute's characteristic outputs.
-RelExpr * InterpretAsRow::bindNode(BindWA *bindWA)
-{
-  if (nodeIsBound())
-  {
-    bindWA->getCurrentScope()->setRETDesc(getRETDesc());
-    return this;
-  }
-
-  // Should be a no-op, as there are no children. This is a leaf node.
-  bindChildren(bindWA);
-  if (bindWA->errStatus()) return this;
-
-  // Get the NATable for the object associated with the audit row image
-  // to be extracted from.
-  NATable *naTable = bindWA->getNATable(getTableName()); 
-  if (bindWA->errStatus()) return this;
-
-  // Allocate a TableDesc and attach it to this.
-  //
-  setTableDesc(bindWA->createTableDesc(naTable, getTableName()));
-  if (bindWA->errStatus())
-    return this;
-  setRETDesc(bindWA->getCurrentScope()->getRETDesc());
-
-  if (naTable->isSQLMPTable())
-  {
-     *CmpCommon::diags() << DgSqlCode(-4082) <<
-         DgTableName(naTable->getTableName().getQualifiedNameAsAnsiString());
-     bindWA->setErrStatus();
-     return this;
-  }
-
-  // Bind the audit image ItemExpr and the modified field map ItemExpr that
-  // represent the host vars/params for these two fields.
-  auditRowImage_->bindNode(bindWA);
-  if (bindWA->errStatus()) {
-     auditRowImage_ = NULL;
-     return this;
-  }
-
-  modifiedFieldMap_->bindNode(bindWA);
-  if (bindWA->errStatus()) {
-     modifiedFieldMap_ = NULL;
-     return this;
-  }
-
-  // If a cast was done on the audit image hostvar/dynamic param, save
-  // the value id of the actual hostvar/param, and not of the cast node.
-  if (auditRowImage_->getOperatorType() == ITM_CAST)
-     auditRowImageVid_ = auditRowImage_->child(0)->getValueId();
-  else
-     auditRowImageVid_ = auditRowImage_->getValueId();
-  
-  if (modifiedFieldMap_->getOperatorType() == ITM_CAST)
-     mfMapVid_ = modifiedFieldMap_->child(0)->getValueId();
-  else
-     mfMapVid_ = modifiedFieldMap_->getValueId();
-
-  // Assign the set of columns that belong to the table specified in the call 
-  // to INTERPRET_AS_ROW as the output values that can be produced.
-  //
-  getGroupAttr()->addCharacteristicOutputs(getTableDesc()->getColumnList());
-
-  // Assign all the columns that belong to the table specified in the call
-  // to INTERPRET_AS_ROW to the data member columnsToExtract_. This set gets
-  // adjusted in InterpretAsRow::pushdownCoveredExpr() as part of normalization.
-  columnsToExtract_ = getTableDesc()->getColumnList();
-
-  RelExpr *boundExpr = bindSelf(bindWA);
-
-  auditRowImage_ = NULL;
-  modifiedFieldMap_ = NULL;
- 
-  return boundExpr;
-} // InterpretAsRow::bindNode
 
 void ProxyFunc::createProxyFuncTableDesc(BindWA *bindWA, CorrName &corrName)
 {

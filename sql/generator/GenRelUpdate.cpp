@@ -581,7 +581,13 @@ static short genHbaseUpdOrInsertExpr(
   if ((isInsert) &&
       (updRowVidList.entries() > 0))
     {
+      ValueIdList updRowKeyVidList;
+      const NAColumnArray &keyColArray = indexDesc->getNAFileSet()->getIndexKeyColumns();
       ULng32 firstKeyColumnOffset = 0;
+
+      for (CollIndex kc=0; kc<keyColArray.entries(); kc++)
+        updRowKeyVidList.insert(updRowVidList[keyColArray[kc]->getPosition()]);
+
       expGen->generateKeyEncodeExpr(indexDesc,
 				    1, // (IN) Destination Atp
 				    mergeInsertRowIdTuppIndex,
@@ -590,32 +596,10 @@ static short genHbaseUpdOrInsertExpr(
 				    mergeInsertRowIdExpr,
 				    FALSE,
 				    firstKeyColumnOffset,
-				    &updRowVidList,
+				    &updRowKeyVidList,
 				    TRUE);
     }
 
-  return 0;
-}
-
-///////////////////////////////////////////////////////////
-//
-// DP2Delete::codeGen()
-//
-// Returned Atp Layout
-//
-// +-------------+----------------+
-// | input data  |  sql table row |
-// | ( I tupps)  |   (1 tupp)     |
-// +-------------+----------------+
-//
-// Input Data -- Atp input to the node from its parent.
-// Output Data -- Row deleted from table (for base tables only).
-//
-//
-///////////////////////////////////////////////////////////
-short DP2Delete::codeGen(Generator * generator)
-{
-  GenAssert(FALSE, "DP2 delete not supported");
   return 0;
 }
 
@@ -654,29 +638,6 @@ static void bindVPCols(Generator *generator,
     }
 }
   
-
-///////////////////////////////////////////////////////////
-//
-// DP2Insert::codeGen()
-//
-//
-// Returned Atp Layout
-//
-// +-------------+----------------+
-// | input data  |  sql table row |
-// | ( I tupps)  |   (1 tupp)     |
-// +-------------+----------------+
-//
-// input data -- the atp input to the node from its parent.
-// sql table row -- tupp for row read from sql table.
-//
-///////////////////////////////////////////////////////////
-short DP2Insert::codeGen(Generator * generator)
-{
-  GenAssert(FALSE, "DP2 insert not supported");
-  return 0;
-}
-
 short HiveInsert::codeGen(Generator *generator)
 {
   if(!generator->explainDisabled()) {
@@ -776,26 +737,6 @@ static void orderColumnsByAlignment(NAArray<BaseColumn *>   columns,
     for( i = 0; i < varCols.entries(); i++ )
       orderedCols->insertAt( k++, varCols[ i ] );
 }
-
-ModifiedFieldMap * DP2Update::createMFMap(Generator * generator,
-					  NABoolean addedColumnPresent)
-{
-  GenAssert(FALSE, "Modified field map not supported");
-  return NULL;
-}
-
-///////////////////////////////////////////////////////////
-//
-// DP2Update::codeGen()
-//
-///////////////////////////////////////////////////////////
-#pragma nowarn(770)  // warning elimination 
-short DP2Update::codeGen(Generator * generator)
-{
-  GenAssert(FALSE, "DP2 update not supported");
-  return 0;
-}
-#pragma warn(770)  // warning elimination 
 
 short Delete::codeGen(Generator * /*generator*/)
 {
@@ -1336,7 +1277,7 @@ short HbaseDelete::codeGen(Generator * generator)
 	  (NOT noCheck()))
 	hbasescan_tdb->setHbaseSqlIUD(TRUE);
 
-      if (!getTableDesc()->getNATable()->isSeabaseMDTable())
+      if (getTableDesc()->getNATable()->isEnabledForDDLQI())
         generator->objectUids().insert(
           getTableDesc()->getNATable()->objectUid().get_value());
     }
@@ -2145,7 +2086,7 @@ short HbaseUpdate::codeGen(Generator * generator)
       if (CmpCommon::getDefault(HBASE_SQL_IUD_SEMANTICS) == DF_ON)
 	hbasescan_tdb->setHbaseSqlIUD(TRUE);
 
-      if (!getTableDesc()->getNATable()->isSeabaseMDTable())
+      if (getTableDesc()->getNATable()->isEnabledForDDLQI())
         generator->objectUids().insert(
           getTableDesc()->getNATable()->objectUid().get_value());
     }
@@ -2783,7 +2724,7 @@ short HbaseInsert::codeGen(Generator *generator)
 
 
       }
-      if (!getTableDesc()->getNATable()->isSeabaseMDTable())
+      if (getTableDesc()->getNATable()->isEnabledForDDLQI())
         generator->objectUids().insert(
           getTableDesc()->getNATable()->objectUid().get_value());
     }

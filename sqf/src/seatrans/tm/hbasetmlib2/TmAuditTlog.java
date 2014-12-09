@@ -33,7 +33,10 @@ import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.client.HBaseAdmin;
+import org.apache.hadoop.hbase.client.HConnection;
+import org.apache.hadoop.hbase.client.HConnectionManager;
 import org.apache.hadoop.hbase.client.HTable;
+import org.apache.hadoop.hbase.client.HTableInterface;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Delete;
@@ -127,7 +130,6 @@ public class TmAuditTlog {
 
    private static int     versions;
    private static int     tlogNumLogs;
-   private static boolean distributedFS;
    private boolean useAutoFlush;
    private static boolean ageCommitted;
    private static boolean forceControlPoint;
@@ -236,14 +238,6 @@ public class TmAuditTlog {
       TLOG_TABLE_NAME = config.get("TLOG_TABLE_NAME");
       int fillerSize = 2;
       controlPointDeferred = false;
-
-      if (LocalHBaseCluster.isLocal(config)) {
-         distributedFS = false;
-      }
-      else {
-         distributedFS = true;
-      }
-      LOG.info("distributedFS is " + distributedFS);
 
       forceControlPoint = false;
       try {
@@ -357,12 +351,6 @@ public class TmAuditTlog {
       hcol.setMaxVersions(versions);
       admin = new HBaseAdmin(config);
 
-      if (distributedFS) {
-         fillerSize = 2;
-      }
-      else {
-         fillerSize = 4097;
-      }
       filler = new byte[fillerSize];
       Arrays.fill(filler, (byte) ' ');
       startTimes      =    new long[50];
@@ -492,7 +480,7 @@ public class TmAuditTlog {
                tableString.append(name);
             }
          }
-         if (LOG.isDebugEnabled()) LOG.debug("table names: " + tableString.toString());
+         if (LOG.isTraceEnabled()) LOG.trace("table names: " + tableString.toString());
       }
       //Create the Put as directed by the hashed key boolean
       Put p;
@@ -500,27 +488,27 @@ public class TmAuditTlog {
       //create our own hashed key
       long key = (((lvTransid & tLogHashKey) << tLogHashShiftFactor) + (lvTransid & 0xFFFFFFFF));
       lv_lockIndex = (int)(lvTransid & tLogHashKey);
-      if (LOG.isDebugEnabled()) LOG.debug("key: " + key + ", hex: " + Long.toHexString(key) + ", transid: " +  lvTransid);
+      if (LOG.isTraceEnabled()) LOG.trace("key: " + key + ", hex: " + Long.toHexString(key) + ", transid: " +  lvTransid);
       p = new Put(Bytes.toBytes(key));
  
       lvAsn = asn.getAndIncrement();
-      if (LOG.isDebugEnabled()) LOG.debug("transid: " + lvTransid + " state: " + lvTxState + " ASN: " + lvAsn);
+      if (LOG.isTraceEnabled()) LOG.trace("transid: " + lvTransid + " state: " + lvTxState + " ASN: " + lvAsn);
       p.add(TLOG_FAMILY, ASN_STATE, Bytes.toBytes(String.valueOf(lvAsn) + "," 
                        + transidString + "," + lvTxState 
                        + "," + Bytes.toString(filler)  
                        +  "," + tableString.toString()));
 
-      if (LOG.isDebugEnabled()) LOG.debug("TLOG putSingleRecord synchronizing tlogAuditLock[" + lv_lockIndex + "] in thread " + threadId );
+      if (LOG.isTraceEnabled()) LOG.trace("TLOG putSingleRecord synchronizing tlogAuditLock[" + lv_lockIndex + "] in thread " + threadId );
       startSynch = System.nanoTime();
       try {
          synchronized (tlogAuditLock[lv_lockIndex]) {
             endSynch = System.nanoTime();
             try {
-               if (LOG.isDebugEnabled()) LOG.debug("try table.put " + p );
+               if (LOG.isTraceEnabled()) LOG.trace("try table.put " + p );
                startTimes[lv_TimeIndex] = System.nanoTime();
                table[lv_lockIndex].put(p);
                if ((forced) && (useAutoFlush == false)) {
-                  if (LOG.isDebugEnabled()) LOG.debug("flushing commits");
+                  if (LOG.isTraceEnabled()) LOG.trace("flushing commits");
                   table[lv_lockIndex].flushCommits();
                }
                endTimes[lv_TimeIndex] = System.nanoTime();
@@ -539,7 +527,7 @@ public class TmAuditTlog {
          e.printStackTrace();
          throw e;
       }
-      if (LOG.isDebugEnabled()) LOG.debug("TLOG putSingleRecord synchronization complete in thread " + threadId );
+      if (LOG.isTraceEnabled()) LOG.trace("TLOG putSingleRecord synchronization complete in thread " + threadId );
 
       synchTimes[lv_TimeIndex] = endSynch - startSynch;
       totalSynchTime += synchTimes[lv_TimeIndex];
@@ -819,15 +807,22 @@ public class TmAuditTlog {
       return true;
    }
 
-   public static boolean deleteAgedEntries(final long lvAsn) throws IOException {
+   public boolean deleteAgedEntries(final long lvAsn) throws IOException {
       if (LOG.isTraceEnabled()) LOG.trace("deleteAgedEntries start:  Entries older than " + lvAsn + " will be removed");
+      HTableInterface deleteTable;
       for (int i = 0; i < tlogNumLogs; i++) {
+         String lv_tLogName = new String(TLOG_TABLE_NAME + "_LOG_" + Integer.toHexString(i));
+//         Connection deleteConnection = ConnectionFactory.createConnection(this.config);
+
+         HConnection deleteConnection = HConnectionManager.createConnection(this.config);
+
+         deleteTable = deleteConnection.getTable(TableName.valueOf(lv_tLogName));
          try {
             Scan s = new Scan();
-            s.setCaching(500);
+            s.setCaching(100);
             s.setCacheBlocks(false);
             ArrayList<Delete> deleteList = new ArrayList<Delete>();
-            ResultScanner ss = table[i].getScanner(s);
+            ResultScanner ss = deleteTable.getScanner(s);
 
             try {
                for (Result r : ss) {
@@ -856,7 +851,7 @@ public class TmAuditTlog {
                               String key = new String(r.getRow());
                               Get get = new Get(r.getRow());
                               get.setMaxVersions(versions);  // will return last n versions of row
-                              Result lvResult = table[i].get(get);
+                              Result lvResult = deleteTable.get(get);
                              // byte[] b = lvResult.getValue(TLOG_FAMILY, ASN_STATE);  // returns current version of value
                               List<Cell> list = lvResult.getColumnCells(TLOG_FAMILY, ASN_STATE);  // returns all versions of this column
                               for (Cell element : list) {
@@ -887,17 +882,36 @@ public class TmAuditTlog {
                      }
                   }
               }
-           } finally {
+           }
+           catch(Exception e){
+              LOG.error("deleteAgedEntries Exception getting results for table index " + i + "; " + e);
+              throw new RuntimeException(e);
+           }
+           finally {
               ss.close();
            }
            if (LOG.isDebugEnabled()) LOG.debug("attempting to delete list with " + deleteList.size() + " elements");
-           synchronized(tlogAuditLock[i]) {
-              table[i].delete(deleteList);
+           try {
+              deleteTable.delete(deleteList);
+           }
+           catch(IOException e){
+              LOG.error("deleteAgedEntries Exception deleting from table index " + i + "; " + e);
+              throw new RuntimeException(e);
            }
         }
         catch (IOException e) {
-           LOG.error("deleteAgedEntries IOException on table index " + i);
+           LOG.error("deleteAgedEntries IOException setting up scan on table index " + i);
            e.printStackTrace();
+        }
+        finally {
+           try {
+              deleteTable.close();
+              deleteConnection.close();
+           }
+           catch (IOException e) {
+              LOG.error("deleteAgedEntries IOException closing table or connection for table index " + i);
+              e.printStackTrace();
+           }
         }
      }
      if (LOG.isTraceEnabled()) LOG.trace("deleteAgedEntries - exit");
@@ -919,7 +933,7 @@ public class TmAuditTlog {
             lv_lockIndex = (int)(transid & tLogHashKey);
             TransactionState value = e.getValue();
             if (value.getStatus().equals("COMMITTED")){
-               if (LOG.isDebugEnabled()) LOG.debug("writeControlPointRecords adding record for trans (" + transid + ") : state is " + value.getStatus());
+               if (LOG.isTraceEnabled()) LOG.trace("writeControlPointRecords adding record for trans (" + transid + ") : state is " + value.getStatus());
                cpWrites++;
                if (forceControlPoint) {
                   putSingleRecord(transid, value.getStatus(), value.getParticipatingRegions(), true);
@@ -943,7 +957,7 @@ public class TmAuditTlog {
       } 
 
       endTime = System.nanoTime();
-      LOG.info("TLog Control Point Write Report\n" + 
+      if (LOG.isDebugEnabled()) LOG.debug("TLog Control Point Write Report\n" + 
                    "                        Total records: " 
                        +  map.size() + " in " + cpWrites + " write operations\n" +
                    "                        Write time: " + (endTime - startTime) / 1000 + " microseconds\n" );
@@ -965,7 +979,7 @@ public class TmAuditTlog {
       if (controlPointDeferred) {
          // We deferred the control point once already due to concurrency.  We'll synchronize this timeIndex
          synchronized (map) {
-            if (LOG.isDebugEnabled()) LOG.debug("Writing synchronized control point records");
+            if (LOG.isTraceEnabled()) LOG.trace("Writing synchronized control point records");
             lvAsn = writeControlPointRecords(map);
          }
 
@@ -989,7 +1003,7 @@ public class TmAuditTlog {
                agedAsn = tLogControlPoint.getRecord(String.valueOf(lvCtrlPt - 5));
                if ((agedAsn > 0) && (lvCtrlPt % 5 == 0)){
                   try {
-                     if (LOG.isDebugEnabled()) LOG.debug("Attempting to remove TLOG writes older than asn " + agedAsn);
+                     if (LOG.isTraceEnabled()) LOG.trace("Attempting to remove TLOG writes older than asn " + agedAsn);
                      deleteAgedEntries(agedAsn);
                   }
                   catch (Exception e){
