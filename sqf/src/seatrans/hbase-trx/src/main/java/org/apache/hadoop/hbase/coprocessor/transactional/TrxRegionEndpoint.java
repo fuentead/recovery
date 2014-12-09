@@ -2517,20 +2517,12 @@ CoprocessorService, Coprocessor {
          String str = sb.toString();
          String zNodePathTM = zNodePath + str;
          String zNodePathTMKey = zNodePathTM + "/" + zNodeKey;
-<<<<<<< HEAD
-         if (LOG.isDebugEnabled()) LOG.debug("Trafodion Recovery Region Observer CP: ZKW Post region recovery znode" + node + " zNode Path " + zNodePathTMKey);
-=======
          if (LOG.isTraceEnabled()) LOG.trace("Trafodion Recovery Region Observer CP: ZKW Post region recovery znode" + node + " zNode Path " + zNodePathTMKey);
->>>>>>> gerrit/master
           // create zookeeper recovery zNode, call ZK ...
          try {
                 if (ZKUtil.checkExists(zkw1, zNodePathTM) == -1) {
                    // create parent nodename
-<<<<<<< HEAD
-                   if (LOG.isDebugEnabled()) LOG.debug("Trafodion Recovery Region Observer CP: ZKW create parent zNodes " + zNodePathTM);
-=======
                    if (LOG.isTraceEnabled()) LOG.trace("Trafodion Recovery Region Observer CP: ZKW create parent zNodes " + zNodePathTM);
->>>>>>> gerrit/master
                    ZKUtil.createWithParents(zkw1, zNodePathTM);
                 }
                 ZKUtil.createAndFailSilent(zkw1, zNodePathTMKey, data);
@@ -3385,31 +3377,18 @@ CoprocessorService, Coprocessor {
 
       throw new IOException("Asked to commit a non-pending transaction");
     }
-<<<<<<< HEAD
-    if (LOG.isDebugEnabled()) LOG.debug("TrxRegionEndpoint coprocessor: commit(txId) -- EXIT txId: " + transactionId);
-=======
     if (LOG.isTraceEnabled()) LOG.trace("TrxRegionEndpoint coprocessor: commit(txId) -- EXIT txId: " + transactionId);
->>>>>>> gerrit/master
 
     // manage concurrent duplicate commit requests through TS.xaOperation object
 
     synchronized(state.getXaOperationObject()) {
         commitStatus = state.getCommitProgress();
-<<<<<<< HEAD
-        if (LOG.isDebugEnabled()) LOG.info("TrxRegionEndpoint coprocessor: commit HHH " + commitStatus);
-        if (commitStatus == 2) { // already committed, this is likely unnecessary due to Status check above
-            if (LOG.isDebugEnabled()) LOG.debug("TrxRegionEndpoint coprocessor: commit - duplicate commit for committed transaction ");
-        }
-        else if (commitStatus == 1) {
-            if (LOG.isDebugEnabled()) LOG.debug("TrxRegionEndpoint coprocessor: commit - duplicate commit during committing transaction ");
-=======
         if (LOG.isTraceEnabled()) LOG.trace("TrxRegionEndpoint coprocessor: commit HHH " + commitStatus);
         if (commitStatus == 2) { // already committed, this is likely unnecessary due to Status check above
             if (LOG.isTraceEnabled()) LOG.trace("TrxRegionEndpoint coprocessor: commit - duplicate commit for committed transaction ");
         }
         else if (commitStatus == 1) {
             if (LOG.isTraceEnabled()) LOG.trace("TrxRegionEndpoint coprocessor: commit - duplicate commit during committing transaction ");
->>>>>>> gerrit/master
             try {
                   Thread.sleep(1000);          ///1000 milliseconds is one second.
             } catch(InterruptedException ex) {
@@ -3417,11 +3396,7 @@ CoprocessorService, Coprocessor {
             }
         }
         else if (commitStatus == 0) {
-<<<<<<< HEAD
-            LOG.info("TrxRegionEndpoint coprocessor: commit HHH " + commitStatus);
-=======
             if (LOG.isTraceEnabled()) LOG.trace("TrxRegionEndpoint coprocessor: commit HHH " + commitStatus);
->>>>>>> gerrit/master
             state.setCommitProgress(1);
             commit(state);
         }
@@ -3687,11 +3662,7 @@ CoprocessorService, Coprocessor {
   public void abortTransaction(final long transactionId) throws IOException, UnknownTransactionException {
     long txid = 0;
 
-<<<<<<< HEAD
-    if (LOG.isDebugEnabled()) LOG.debug("TrxRegionEndpoint coprocessor: abort transactionId: " + transactionId + " " + m_Region.getRegionInfo().getRegionNameAsString());
-=======
     if (LOG.isTraceEnabled()) LOG.trace("TrxRegionEndpoint coprocessor: abort transactionId: " + transactionId + " " + m_Region.getRegionInfo().getRegionNameAsString());
->>>>>>> gerrit/master
 
     TransactionState state;
     try {
@@ -3708,11 +3679,7 @@ CoprocessorService, Coprocessor {
 
     synchronized(state.getXaOperationObject()) {
         if (state.getStatus().equals(Status.ABORTED)) { // already aborted, duplicate abort requested
-<<<<<<< HEAD
-            if (LOG.isDebugEnabled()) LOG.debug("TrxRegionEndpoint coprocessor: duplicate abort transaction Id: " + transactionId + " " + m_Region.getRegionInfo().getRegionNameAsString());
-=======
             if (LOG.isTraceEnabled()) LOG.trace("TrxRegionEndpoint coprocessor: duplicate abort transaction Id: " + transactionId + " " + m_Region.getRegionInfo().getRegionNameAsString());
->>>>>>> gerrit/master
             return;
         }
         state.setStatus(Status.ABORTED);
