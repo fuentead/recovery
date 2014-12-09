@@ -343,7 +343,7 @@ $(OUTDIR)/%.o:$(SBDIR)/%.cpp $(INCLUDE)
 
 # Targets
 # Uncomment the following target to disable parallel make
-#.NOTPARALLEL: $(PGMS)
+.NOTPARALLEL: $(PGMS)
 
 all: $(PGMS) example
 

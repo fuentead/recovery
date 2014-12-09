@@ -1362,6 +1362,10 @@ void CRedirector::delFromEpollSet(int fd)
         mon_log_write(MON_REDIR_DELFROMEPOLL_1, SQ_LOG_ERR, buf);
     }
 
+    if (trace_settings & TRACE_REDIRECTION)
+        trace_printf("%s@%d deleted fd=%d from list of epoll monitored fds\n",
+                     method_name, __LINE__, fd);
+
     TRACE_EXIT;
 }
 

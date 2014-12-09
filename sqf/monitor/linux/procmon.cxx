@@ -64,9 +64,10 @@ static void *ProcessMonitorThread( void *arg )
     }
 
     // Mask all allowed signals except SIGUSR1 and SIGPROF
+    // Mask all allowed signals except SIGPROF
     sigset_t    mask;
     sigfillset( &mask);
-    sigdelset( &mask, SIGUSR1 );
+//    sigdelset( &mask, SIGUSR1 );
     sigdelset( &mask, SIGPROF ); // allows profiling such as google profiler
 
     int rc = pthread_sigmask( SIG_SETMASK, &mask, NULL );
