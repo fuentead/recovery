@@ -2439,12 +2439,7 @@ void CCluster::InitializeConfigCluster( void )
     {
         InitServerSock();
     }
-#if 0
-    else
-    {
-        MyNode->SetCommPort( MyCommPort );
-    }
-#endif
+
     // The new monitor in a real cluster initializes all 
     // existing nodes to a down state.
     // ReIntegrate() will set the state to up when communication is established.
@@ -2600,13 +2595,6 @@ void CCluster::InitializeConfigCluster( void )
                         , i, upNodes_.upNodes[i]);
         }
     }
-
-#if 0     
-//    MPI_Close_port( MyMPICommPort );
-    if (trace_settings & TRACE_INIT)
-       trace_printf("%s@%d" "- Calling MPI_Finalize()" "\n", method_name, __LINE__);
-    MPI_Finalize ();
-#endif
 
     TRACE_EXIT;
 }

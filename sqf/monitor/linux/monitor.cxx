@@ -911,9 +911,6 @@ int main (int argc, char *argv[])
     MPI_Comm_rank (MPI_COMM_WORLD, &MyPNID);
     gethostname(Node_name, MPI_MAX_PROCESSOR_NAME);
 
-//    MPI_Open_port (MPI_INFO_NULL, MyMPICommPort);
-
-
 #ifdef MULTI_TRACE_FILES
     setThreadVariable( (char *)"mainThread" );
 #endif
@@ -953,6 +950,7 @@ int main (int argc, char *argv[])
         case CommType_Sockets: // Valid communication protocol
             break;
         case CommType_InfiniBand: // Currenly disabled - requires HA MPI
+            //MPI_Open_port (MPI_INFO_NULL, MyMPICommPort);
         default:
             printf( "SQ_IC contains invalid communication protocol: %s\n"
                    , CommTypeString(CommType));
@@ -1467,8 +1465,14 @@ int main (int argc, char *argv[])
     {
         RobSem::destroy_sem( sbDiscSem );
     }
-#if 0     
-    MPI_Close_port( MyCommPort );
+    if ( CommType == CommType_InfiniBand )
+    {
+        MPI_Close_port( MyCommPort );
+    } 
+#if 0
+    // TODO: MPICH cannot handle a node down and subsequent shutdown
+    //       MPI_Finalize() hangs so its currently disabled, but
+    //       causes an abnormal termination in the monitor process at exit.
     if (trace_settings & TRACE_INIT)
        trace_printf("%s@%d" "- Calling MPI_Finalize()" "\n", method_name, __LINE__);
     MPI_Finalize ();

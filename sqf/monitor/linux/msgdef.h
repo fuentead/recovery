@@ -58,7 +58,11 @@
 #define MAX_ARG_SIZE     256
 
 #define MAX_CORES        64    // Current logic supports Linux limit of 1024
-#define MAX_NODES        256   // This can be higher when needed
+                               // NOTE: Increase with caution as this number
+                               // is also used to gather CPU statistics and
+                               // a large number may degrade performance
+#define MAX_NODES        256   // This can be higher when needed and will
+                               // have performance implications
 #define MAX_LNODES       (MAX_NODES*4)  // The 4 is a per physical node limit
 #define MAX_NODE_MASKS   (MAX_NODES/64) // The 64 is a bit mask word boundary
 
